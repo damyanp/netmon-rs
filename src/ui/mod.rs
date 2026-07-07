@@ -138,16 +138,18 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     ))
     .columns([GridLength::STAR, GridLength::Auto]);
 
-    // Responsive layout: below a size threshold, drop the per-target cards and
-    // show just the combined chart with a color legend, scaled to fill.
+    // Responsive layout: cards share the available width equally and their
+    // sparklines scale with them. Below a minimum card width (or a short window),
+    // drop the cards and show just the combined chart with a color legend.
     let size = cx.use_inner_size();
     let pad = 24.0_f64;
-    let compact = size.width > 0.0 && (size.width < 720.0 || size.height < 520.0);
+    let gap = 16.0_f64;
+    let n = cards_info.len().max(1) as f64;
+    let avail_w = size.width - 2.0 * pad;
+    let card_w = ((avail_w - (n - 1.0) * gap) / n).max(80.0);
+    let compact = size.width > 0.0 && (card_w < 170.0 || size.height < 520.0);
 
-    let chart_w = {
-        let avail = size.width - 2.0 * pad;
-        if avail > 160.0 { avail } else { chart::W as f64 }
-    };
+    let chart_w = if avail_w > 160.0 { avail_w } else { chart::W as f64 };
     let chart_h = if compact {
         // Fill the vertical space left under the header + legend.
         (size.height - 150.0).max(180.0)
@@ -203,6 +205,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                         c.measured,
                         revision,
                         window_mins,
+                        card_w,
                     )
                 })
                 .collect::<Vec<Element>>(),
