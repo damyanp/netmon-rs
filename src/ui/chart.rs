@@ -12,6 +12,7 @@ use windows_reactor::*;
 use crate::device::{Gpu, gpu_context, is_device_lost};
 use crate::monitor::{Shared, now_ms};
 
+/// Fallback size, used before the real layout size is known.
 pub const W: i32 = 960;
 pub const H: i32 = 320;
 
@@ -37,18 +38,23 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
-/// Props are compared cheaply: the chart rebuilds only when the revision or
-/// window changes, not on every re-render.
+/// Props are compared cheaply: the chart rebuilds only when the revision,
+/// window, or draw size changes, not on every re-render.
 #[derive(Clone)]
 pub struct ChartProps {
     pub shared: Shared,
     pub revision: u64,
     pub window_mins: i64,
+    pub width: i32,
+    pub height: i32,
 }
 
 impl PartialEq for ChartProps {
     fn eq(&self, other: &Self) -> bool {
-        self.revision == other.revision && self.window_mins == other.window_mins
+        self.revision == other.revision
+            && self.window_mins == other.window_mins
+            && self.width == other.width
+            && self.height == other.height
     }
 }
 
@@ -58,12 +64,14 @@ pub fn chart_view(props: &ChartProps, cx: &mut RenderCx) -> Element {
     let device = gpu.as_ref().and_then(Gpu::device);
     let (surface, set_surface) = cx.use_state::<Option<SurfaceImageSource>>(None);
 
+    let (w, h) = (props.width.max(160), props.height.max(120));
     let props = props.clone();
     let dev = device.clone();
     let gpu_effect = gpu.clone();
-    cx.use_effect((device.clone(), props.revision, props.window_mins), move || {
-        match dev.as_ref() {
-            Some(dev) => match build_surface(dev, &props) {
+    cx.use_effect(
+        (device.clone(), props.revision, props.window_mins, w, h),
+        move || match dev.as_ref() {
+            Some(dev) => match build_surface(dev, &props, w, h) {
                 Ok(sis) => set_surface.call(Some(sis)),
                 Err(e) if is_device_lost(e.code()) => {
                     if let Some(g) = gpu_effect.as_ref() {
@@ -73,13 +81,13 @@ pub fn chart_view(props: &ChartProps, cx: &mut RenderCx) -> Element {
                 Err(e) => eprintln!("chart: draw failed: {e}"),
             },
             None => set_surface.call(None),
-        }
-    });
+        },
+    );
 
     match surface {
         Some(sis) => Image::new(sis.into())
-            .width(W as f64)
-            .height(H as f64)
+            .width(w as f64)
+            .height(h as f64)
             .into(),
         None => text_block("Preparing chart\u{2026}").into(),
     }
@@ -110,25 +118,29 @@ fn snapshot(props: &ChartProps) -> ChartData {
     ChartData { names, samples }
 }
 
-fn build_surface(device: &crate::device::Device, props: &ChartProps) -> Result<SurfaceImageSource> {
+fn build_surface(
+    device: &crate::device::Device,
+    props: &ChartProps,
+    w: i32,
+    h: i32,
+) -> Result<SurfaceImageSource> {
     let data = snapshot(props);
 
-    let surface = SurfaceImageSource::new(W, H)?;
+    let surface = SurfaceImageSource::new(w, h)?;
     surface.set_device(device.d2d_device())?;
-    let (ctx, (ox, oy)) = surface.begin_draw::<ID2D1DeviceContext>(0, 0, W, H)?;
+    let (ctx, (ox, oy)) = surface.begin_draw::<ID2D1DeviceContext>(0, 0, w, h)?;
 
     unsafe {
         ctx.SetTransform(&Matrix3x2::translation(ox as f32, oy as f32));
         ctx.Clear(Some(&color(0x16, 0x1b, 0x22)));
-        draw_chart(&ctx, &data)?;
+        draw_chart(&ctx, &data, w as f32, h as f32)?;
     }
 
     surface.end_draw()?;
     Ok(surface)
 }
 
-unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData) -> Result<()> {
-    let (w, h) = (W as f32, H as f32);
+unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32) -> Result<()> {
     let (pad_l, pad_r, pad_t, pad_b) = (44.0_f32, 12.0_f32, 12.0_f32, 24.0_f32);
     let plot_w = w - pad_l - pad_r;
     let plot_h = h - pad_t - pad_b;

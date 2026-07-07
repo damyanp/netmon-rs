@@ -105,3 +105,29 @@ on the `windows` dependency, in addition to `Win32_UI_WindowsAndMessaging`.
 Expose either the window HWND / `AppWindow` to app code, or a public `.icon()` on
 the `App` builder, so callers don't have to re-find their own window and poke it
 with Win32.
+
+## 3. Swapping layouts orphans component subtrees — key them
+
+For the responsive layout we switch between a wide dashboard (per-target cards +
+chart) and a compact one (color legend + full-height chart), driven by
+`cx.use_inner_size()` (which re-renders subscribers on resize — this part works
+well).
+
+First cut just returned a different `vstack` per mode with no keys. Crossing the
+breakpoint left **orphaned sparkline surfaces** on screen: the reconciler diffed
+the old tree against the new one positionally, and when a card `vstack` (5
+children, incl. a `component(spark_view)`) was reconciled in place against a
+shorter legend `hstack` (2 children), the trailing spark **component** subtree
+wasn't fully torn down. So the compact view showed a couple of leftover
+mini-charts where the legend should be.
+
+Fix: give the two layouts distinct keys — `.with_key("dashboard-normal")` vs
+`.with_key("dashboard-compact")`. A changed key makes the reconciler fully
+unmount the old subtree and mount the new one instead of diffing in place, so no
+orphans survive. The full remount only happens when actually crossing the
+breakpoint, so the cost is negligible.
+
+General lesson: **when you conditionally swap one subtree for a structurally
+different one, key them** so the swap is a clean remount rather than an in-place
+positional diff (which, at least here, doesn't reliably tear down nested
+components when the child count shrinks).

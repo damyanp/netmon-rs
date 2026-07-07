@@ -138,25 +138,22 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     ))
     .columns([GridLength::STAR, GridLength::Auto]);
 
-    let cards_row = hstack(
-        cards_info
-            .iter()
-            .map(|c| {
-                card_element(
-                    &shared,
-                    &c.name,
-                    &c.ip,
-                    c.index,
-                    c.current,
-                    c.loss,
-                    c.measured,
-                    revision,
-                    window_mins,
-                )
-            })
-            .collect::<Vec<Element>>(),
-    )
-    .spacing(16.0);
+    // Responsive layout: below a size threshold, drop the per-target cards and
+    // show just the combined chart with a color legend, scaled to fill.
+    let size = cx.use_inner_size();
+    let pad = 24.0_f64;
+    let compact = size.width > 0.0 && (size.width < 720.0 || size.height < 520.0);
+
+    let chart_w = {
+        let avail = size.width - 2.0 * pad;
+        if avail > 160.0 { avail } else { chart::W as f64 }
+    };
+    let chart_h = if compact {
+        // Fill the vertical space left under the header + legend.
+        (size.height - 150.0).max(180.0)
+    } else {
+        chart::H as f64
+    };
 
     let chart = component(
         chart_view,
@@ -164,19 +161,66 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             shared: shared.clone(),
             revision,
             window_mins,
+            width: chart_w.round() as i32,
+            height: chart_h.round() as i32,
         },
     );
 
-    let dashboard = vstack((
-        header,
-        cards_row,
-        text_block("Latency over time (ms) - red marks = packet dropped")
-            .foreground(Color::rgb(0x8b, 0x94, 0x9e))
-            .font_size(14.0),
-        chart,
-    ))
-    .spacing(16.0)
-    .padding(Thickness::uniform(24.0));
+    let dashboard = if compact {
+        let legend = hstack(
+            cards_info
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let (r, g, b) = chart::COLORS[i % chart::COLORS.len()];
+                    hstack((
+                        text_block("\u{25CF}").foreground(Color::rgb(r, g, b)),
+                        text_block(c.name.clone()).foreground(Color::rgb(0x8b, 0x94, 0x9e)),
+                    ))
+                    .spacing(6.0)
+                    .into()
+                })
+                .collect::<Vec<Element>>(),
+        )
+        .spacing(16.0);
+
+        vstack((header, legend, chart))
+            .spacing(16.0)
+            .padding(Thickness::uniform(24.0))
+            .with_key("dashboard-compact")
+    } else {
+        let cards_row = hstack(
+            cards_info
+                .iter()
+                .map(|c| {
+                    card_element(
+                        &shared,
+                        &c.name,
+                        &c.ip,
+                        c.index,
+                        c.current,
+                        c.loss,
+                        c.measured,
+                        revision,
+                        window_mins,
+                    )
+                })
+                .collect::<Vec<Element>>(),
+        )
+        .spacing(16.0);
+
+        vstack((
+            header,
+            cards_row,
+            text_block("Latency over time (ms) - red marks = packet dropped")
+                .foreground(Color::rgb(0x8b, 0x94, 0x9e))
+                .font_size(14.0),
+            chart,
+        ))
+        .spacing(16.0)
+        .padding(Thickness::uniform(24.0))
+        .with_key("dashboard-normal")
+    };
 
     let overlay: Element = if settings_open {
         settings_panel(SettingsCtx {
