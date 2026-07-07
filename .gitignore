@@ -1,0 +1,7 @@
+# Rust build output
+/target
+
+# Local runtime/debug artifacts
+*.log
+*.bak.json
+settings.json

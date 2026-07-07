@@ -1,0 +1,36 @@
+[package]
+name = "netmon-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "A native Windows network monitor (WinUI 3 / windows-rs) showing live latency, packet loss, and history."
+
+[dependencies]
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "c1669575e6de5fce058afd2467467be75197ca09" }
+windows-numerics = { git = "https://github.com/microsoft/windows-rs", rev = "c1669575e6de5fce058afd2467467be75197ca09" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.windows]
+git = "https://github.com/microsoft/windows-rs"
+rev = "c1669575e6de5fce058afd2467467be75197ca09"
+default-features = true
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_System_SystemInformation",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "c1669575e6de5fce058afd2467467be75197ca09" }
+
+[profile.release]
+panic = "abort"
