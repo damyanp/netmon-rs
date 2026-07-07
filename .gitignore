@@ -5,3 +5,6 @@
 *.log
 *.bak.json
 settings.json
+
+# Installer build output
+/installer/Output

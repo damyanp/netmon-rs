@@ -43,6 +43,25 @@ cargo run --release
 The debug build works too (`cargo run`); the release profile builds with
 `panic = "abort"`.
 
+## Installer
+
+Build a per-user Windows installer (no admin required) with
+[Inno Setup](https://jrsoftware.org/isinfo.php):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
+```
+
+The script reads the version from `Cargo.toml`, builds the release binary,
+installs the Inno Setup compiler via `winget` if it's missing, and writes
+`installer\Output\NetworkMonitor-Setup-<version>.exe`. Pass `-SkipBuild` to
+reuse an existing `--release` build.
+
+The installer deploys to `%LOCALAPPDATA%\Programs\Network Monitor`, adds Start
+Menu (and optional desktop) shortcuts, and registers an uninstaller. Because the
+app is framework-dependent, first launch offers to install the Windows App
+Runtime if it isn't already present.
+
 ## License
 
 See [LICENSE](LICENSE).
