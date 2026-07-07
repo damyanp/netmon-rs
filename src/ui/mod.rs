@@ -6,6 +6,7 @@
 pub mod cards;
 pub mod chart;
 pub mod settings;
+mod window_icon;
 
 use std::time::Duration;
 
@@ -44,6 +45,9 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     });
     let bump_recover = cx.use_memo((), move || bump_recover);
     let gpu = Gpu::new(device, bump_recover);
+
+    // Adopt the exe's embedded icon for the window caption + taskbar (once).
+    cx.use_effect((), || window_icon::set_app_window_icon());
 
     // 1 Hz refresh: bump a counter so the view re-reads shared state.
     let (_tick, bump_tick) = cx.use_reducer::<u64>(0);
