@@ -31,6 +31,7 @@ features = [
 
 [build-dependencies]
 windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "c1669575e6de5fce058afd2467467be75197ca09" }
+embed-resource = "3"
 
 [profile.release]
 panic = "abort"

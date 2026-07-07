@@ -1,0 +1,4 @@
+// Windows resource script: embeds the application icon into the executable so
+// it shows in the taskbar, Explorer, and shortcuts. Path is relative to this
+// file. `1` is the lowest icon ordinal, which Windows uses as the app icon.
+1 ICON "netmon.ico"
