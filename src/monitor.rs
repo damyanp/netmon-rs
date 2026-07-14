@@ -63,7 +63,9 @@ pub fn spawn(shared: Shared, cfg: Config) {
 }
 
 fn worker(shared: Shared, cfg: Config) {
-    let mut last_resolve = Instant::now() - Duration::from_secs(3600);
+    // `None` means "never resolved yet", so the first loop iteration resolves
+    // immediately. Avoids `Instant - Duration`, which panics on short uptimes.
+    let mut last_resolve: Option<Instant> = None;
     let mut last_save = Instant::now();
 
     loop {
@@ -74,9 +76,9 @@ fn worker(shared: Shared, cfg: Config) {
             (st.targets.clone(), st.interval_ms)
         };
 
-        if last_resolve.elapsed() >= Duration::from_millis(cfg.mac_resolve_ms) {
+        if last_resolve.is_none_or(|t| t.elapsed() >= Duration::from_millis(cfg.mac_resolve_ms)) {
             resolve_macs(&mut targets, cfg.timeout_ms);
-            last_resolve = Instant::now();
+            last_resolve = Some(Instant::now());
             // Push any healed IPs back into shared state (matched by name).
             let mut st = shared.lock().unwrap();
             for t in &targets {
