@@ -131,3 +131,17 @@ General lesson: **when you conditionally swap one subtree for a structurally
 different one, key them** so the swap is a clean remount rather than an in-place
 positional diff (which, at least here, doesn't reliably tear down nested
 components when the child count shrinks).
+
+## 4. No built-in app-level GPU context/recovery glue
+
+`windows-canvas` now provides the rendering primitives we need (`GpuDevice`,
+`CanvasImageSource`, drawing/session APIs), but it does **not** provide reactor
+app glue for:
+
+- sharing one device instance through app-specific context values,
+- identity-based "device changed" dependency semantics for effect keys, and
+- app-managed recovery signaling from leaf components back to the root.
+
+That glue still lives in `src/device.rs` (`Device`, `Gpu`, `gpu_context()`): it
+is intentionally thin, but still necessary to integrate canvas drawing with this
+app's state/reconcile flow.
