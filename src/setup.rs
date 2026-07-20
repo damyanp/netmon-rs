@@ -2,8 +2,8 @@
 //! machine. If `bootstrap()` fails because it is missing, offer to install it
 //! (best effort, via winget) and open the official download page as a fallback.
 
-use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, Result, w};
+use windows::winuser::*;
 
 const DOWNLOAD_PAGE: &str = "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads";
 
@@ -30,7 +30,7 @@ pub fn handle_missing_runtime(err: &Error) -> Result<()> {
         )
     };
 
-    if choice != IDYES {
+    if choice != IDYES as i32 {
         open_download_page();
         return Err(err.clone());
     }

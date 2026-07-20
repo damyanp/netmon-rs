@@ -3,9 +3,9 @@
 A native Windows network monitor. It continuously pings a set of targets and
 shows live latency, packet loss, and history in a WinUI 3 desktop window.
 
-Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs) and its
-`windows-reactor` declarative UI library. The dashboard renders on demand with
-`SurfaceImageSource` + Direct2D (no animated swapchain).
+Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs), using
+`windows-reactor` and `windows-canvas`. The dashboard renders on demand with
+`CanvasImageSource` + Direct2D (no animated swapchain).
 
 ## Features
 

@@ -2,11 +2,12 @@
 //! the exe (resource id 1). WinUI 3 doesn't adopt the exe icon for the title-bar
 //! automatically, so we push it in via Win32 once the window exists.
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR};
+use windows::libloaderapi::GetModuleHandleW;
+use windows::minwindef::{LPARAM, WPARAM};
+use windows::processthreadsapi::GetCurrentThreadId;
+use windows::windef::{HICON, HWND};
+use windows::winuser::*;
 
 const APP_ICON_ID: u16 = 1;
 const WINDOW_TITLE: &str = "Network Monitor";
@@ -16,37 +17,47 @@ pub fn set_app_window_icon() {
         let Some(hwnd) = find_main_window() else {
             return;
         };
-        let Ok(hinst) = GetModuleHandleW(PCWSTR::null()) else {
+        let hinst = GetModuleHandleW(PCWSTR::null());
+        if hinst.0.is_null() {
             return;
-        };
+        }
 
         let load = |cx: i32, cy: i32| -> Option<HICON> {
-            LoadImageW(
+            let h = LoadImageW(
                 Some(hinst.into()),
                 PCWSTR(APP_ICON_ID as usize as *const u16),
                 IMAGE_ICON,
                 cx,
                 cy,
                 LR_DEFAULTCOLOR,
-            )
-            .ok()
-            .map(|h| HICON(h.0))
+            );
+            if h.0.is_null() {
+                None
+            } else {
+                Some(HICON(h.0 as _))
+            }
         };
 
-        if let Some(big) = load(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)) {
+        if let Some(big) = load(
+            GetSystemMetrics(SM_CXICON as i32),
+            GetSystemMetrics(SM_CYICON as i32),
+        ) {
             let _ = SendMessageW(
                 hwnd,
                 WM_SETICON,
-                Some(WPARAM(ICON_BIG as usize)),
-                Some(LPARAM(big.0 as isize)),
+                WPARAM(ICON_BIG as usize),
+                LPARAM(big.0 as isize),
             );
         }
-        if let Some(small) = load(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) {
+        if let Some(small) = load(
+            GetSystemMetrics(SM_CXSMICON as i32),
+            GetSystemMetrics(SM_CYSMICON as i32),
+        ) {
             let _ = SendMessageW(
                 hwnd,
                 WM_SETICON,
-                Some(WPARAM(ICON_SMALL as usize)),
-                Some(LPARAM(small.0 as isize)),
+                WPARAM(ICON_SMALL as usize),
+                LPARAM(small.0 as isize),
             );
         }
     }
@@ -67,7 +78,7 @@ unsafe fn find_main_window() -> Option<HWND> {
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     unsafe {
         // Top-level windows only (no owner).
-        if !GetWindow(hwnd, GW_OWNER).unwrap_or_default().0.is_null() {
+        if !GetWindow(hwnd, GW_OWNER).0.is_null() {
             return BOOL(1);
         }
         let mut buf = [0u16; 256];
