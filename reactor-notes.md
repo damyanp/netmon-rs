@@ -2,7 +2,7 @@
 
 Friction encountered building netmon-rs on `windows-rs` / `windows-reactor`
 (WinUI 3). Recorded here so the next person (or the next feature) doesn't have to
-rediscover it. Reactor source referenced is the pinned rev `c166957`,
+rediscover it. Reactor source referenced is the pinned rev `9d457ed`,
 `crates/libs/reactor/src/`.
 
 ## 1. Nested components don't re-render from their own state
@@ -97,8 +97,9 @@ a one-shot `use_effect` in `src/ui/mod.rs`):
    and large sizes.
 3. Push both in with `SendMessageW(hwnd, WM_SETICON, ICON_SMALL/ICON_BIG, ...)`.
 
-This needs the `Win32_System_LibraryLoader` and `Win32_System_Threading` features
-on the `windows` dependency, in addition to `Win32_UI_WindowsAndMessaging`.
+With current windows-rs (`0.62` line), these imports come from the newer module
+layout (`libloaderapi`, `processthreadsapi`, `winuser`, plus base `minwin*` /
+`windef` types) rather than the older `Win32_*` feature names.
 
 ### Suggested upstream fix
 
