@@ -5,8 +5,7 @@
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, Result, w};
 
-const DOWNLOAD_PAGE: &str =
-    "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads";
+const DOWNLOAD_PAGE: &str = "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads";
 
 /// winget package IDs to try, most specific first. IDs occasionally change
 /// across releases, so we try a small list and fall back to the download page.

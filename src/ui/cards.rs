@@ -72,7 +72,9 @@ pub fn card_element(
             text_block("\u{25CF}").foreground(loss_color(loss_pct)),
         ))
         .spacing(8.0),
-        text_block(ip).foreground(Color::rgb(0x8b, 0x94, 0x9e)).font_size(11.0),
+        text_block(ip)
+            .foreground(Color::rgb(0x8b, 0x94, 0x9e))
+            .font_size(11.0),
         text_block(latency).font_size(28.0).bold(),
         text_block(format!("{loss_pct}% loss ({sample_count} samples)"))
             .foreground(Color::rgb(0x8b, 0x94, 0x9e))
@@ -113,8 +115,9 @@ fn spark_view(props: &SparkProps, cx: &mut RenderCx) -> Element {
     let props = props.clone();
     let dev = device.clone();
     let gpu_effect = gpu.clone();
-    cx.use_effect((device.clone(), props.revision, props.window_mins, w), move || {
-        match dev.as_ref() {
+    cx.use_effect(
+        (device.clone(), props.revision, props.window_mins, w),
+        move || match dev.as_ref() {
             Some(dev) => match build_spark(dev, &props, w) {
                 Ok(sis) => set_surface.call(Some(sis)),
                 Err(e) if is_device_lost(e.code()) => {
@@ -125,8 +128,8 @@ fn spark_view(props: &SparkProps, cx: &mut RenderCx) -> Element {
                 Err(e) => eprintln!("spark: draw failed: {e}"),
             },
             None => set_surface.call(None),
-        }
-    });
+        },
+    );
 
     match surface {
         Some(sis) => Image::new(sis.into())
@@ -168,13 +171,22 @@ fn build_spark(
         ctx.Clear(Some(&d2d_color(0x16, 0x1b, 0x22, 1.0)));
 
         let (w, h) = (spark_w as f32, SPARK_H as f32);
-        let max = vals.iter().filter_map(|v| v.flatten()).max().unwrap_or(0).max(50) as f32;
+        let max = vals
+            .iter()
+            .filter_map(|v| v.flatten())
+            .max()
+            .unwrap_or(0)
+            .max(50) as f32;
         let n = vals.len();
         let line = ctx.CreateSolidColorBrush(&d2d_color(r, g, b, 1.0), None)?;
         let drop = ctx.CreateSolidColorBrush(&d2d_color(0xf8, 0x51, 0x49, 0.5), None)?;
 
         let x_at = |i: usize| -> f32 {
-            if n <= 1 { 0.0 } else { (i as f32 / (n - 1) as f32) * w }
+            if n <= 1 {
+                0.0
+            } else {
+                (i as f32 / (n - 1) as f32) * w
+            }
         };
         let mut prev: Option<Vector2> = None;
         for (i, v) in vals.iter().enumerate() {
@@ -189,7 +201,12 @@ fn build_spark(
                 }
                 Some(None) => {
                     let x = x_at(i);
-                    let rect = D2D_RECT_F { left: x - 1.0, top: 0.0, right: x + 1.0, bottom: h };
+                    let rect = D2D_RECT_F {
+                        left: x - 1.0,
+                        top: 0.0,
+                        right: x + 1.0,
+                        bottom: h,
+                    };
                     ctx.FillRectangle(&rect, &drop);
                     prev = None;
                 }

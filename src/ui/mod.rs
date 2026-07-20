@@ -81,8 +81,12 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let (cards_info, revision, worst_loss) = {
         let st = shared.lock().unwrap();
         let cutoff = now_ms() - window_mins * 60_000;
-        let win: Vec<&crate::history::Sample> =
-            st.history.samples.iter().filter(|s| s.t >= cutoff).collect();
+        let win: Vec<&crate::history::Sample> = st
+            .history
+            .samples
+            .iter()
+            .filter(|s| s.t >= cutoff)
+            .collect();
         let last = st.history.samples.last();
         let mut worst = 0u32;
         let infos: Vec<CardInfo> = st
@@ -97,7 +101,11 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                     .iter()
                     .filter(|s| matches!(s.v.get(&t.name), Some(None)))
                     .count();
-                let loss = if measured > 0 { (drops * 100 / measured) as u32 } else { 0 };
+                let loss = if measured > 0 {
+                    (drops * 100 / measured) as u32
+                } else {
+                    0
+                };
                 worst = worst.max(loss);
                 let current = last.and_then(|s| s.v.get(&t.name).copied().flatten());
                 CardInfo {
@@ -116,9 +124,15 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let (status_text, status_color) = if worst_loss == 0 {
         ("All hops healthy".to_string(), Color::rgb(0x3f, 0xb9, 0x50))
     } else if worst_loss < 10 {
-        (format!("Minor loss ({worst_loss}%)"), Color::rgb(0xd2, 0x99, 0x22))
+        (
+            format!("Minor loss ({worst_loss}%)"),
+            Color::rgb(0xd2, 0x99, 0x22),
+        )
     } else {
-        (format!("Packet loss up to {worst_loss}%"), Color::rgb(0xf8, 0x51, 0x49))
+        (
+            format!("Packet loss up to {worst_loss}%"),
+            Color::rgb(0xf8, 0x51, 0x49),
+        )
     };
 
     let gear = button("")
@@ -149,7 +163,11 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let card_w = ((avail_w - (n - 1.0) * gap) / n).max(80.0);
     let compact = size.width > 0.0 && (card_w < 170.0 || size.height < 520.0);
 
-    let chart_w = if avail_w > 160.0 { avail_w } else { chart::W as f64 };
+    let chart_w = if avail_w > 160.0 {
+        avail_w
+    } else {
+        chart::W as f64
+    };
     let chart_h = if compact {
         // Fill the vertical space left under the header + legend.
         (size.height - 150.0).max(180.0)

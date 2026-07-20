@@ -124,7 +124,11 @@ pub fn clamp_interval(ms: u32) -> u32 {
 
 /// Snap a window value to one of the offered options, defaulting to 10 min.
 pub fn clamp_window(mins: i64) -> i64 {
-    if WINDOW_MINS.contains(&mins) { mins } else { 10 }
+    if WINDOW_MINS.contains(&mins) {
+        mins
+    } else {
+        10
+    }
 }
 
 /// Persist all settings to `settings.json`.

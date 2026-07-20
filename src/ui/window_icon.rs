@@ -13,8 +13,12 @@ const WINDOW_TITLE: &str = "Network Monitor";
 
 pub fn set_app_window_icon() {
     unsafe {
-        let Some(hwnd) = find_main_window() else { return };
-        let Ok(hinst) = GetModuleHandleW(PCWSTR::null()) else { return };
+        let Some(hwnd) = find_main_window() else {
+            return;
+        };
+        let Ok(hinst) = GetModuleHandleW(PCWSTR::null()) else {
+            return;
+        };
 
         let load = |cx: i32, cy: i32| -> Option<HICON> {
             LoadImageW(

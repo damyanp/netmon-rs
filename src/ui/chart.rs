@@ -145,8 +145,7 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
     let plot_w = w - pad_l - pad_r;
     let plot_h = h - pad_t - pad_b;
 
-    let dwrite: IDWriteFactory =
-        unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+    let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
     let label_fmt = unsafe {
         dwrite.CreateTextFormat(
             w!("Segoe UI"),
@@ -161,14 +160,24 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
 
     let grid_brush = unsafe {
         ctx.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.06 },
+            &D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.06,
+            },
             None,
         )?
     };
     let text_brush = unsafe { ctx.CreateSolidColorBrush(&color(0x8b, 0x94, 0x9e), None)? };
     let drop_brush = unsafe {
         ctx.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.97, g: 0.32, b: 0.29, a: 0.25 },
+            &D2D1_COLOR_F {
+                r: 0.97,
+                g: 0.32,
+                b: 0.29,
+                a: 0.25,
+            },
             None,
         )?
     };
@@ -197,8 +206,15 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
         }
         let val = (max_y * (1.0 - g as f32 / 4.0)).round() as i32;
         let text = wide(&format!("{val}ms"));
-        let rect = D2D_RECT_F { left: 0.0, top: y - 8.0, right: pad_l - 6.0, bottom: y + 8.0 };
-        unsafe { label_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?; }
+        let rect = D2D_RECT_F {
+            left: 0.0,
+            top: y - 8.0,
+            right: pad_l - 6.0,
+            bottom: y + 8.0,
+        };
+        unsafe {
+            label_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+        }
         unsafe {
             ctx.DrawText(
                 &text,
@@ -213,7 +229,11 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
 
     let n = data.samples.len();
     let x_at = |i: usize| -> f32 {
-        if n <= 1 { pad_l } else { pad_l + (i as f32 / (n - 1) as f32) * plot_w }
+        if n <= 1 {
+            pad_l
+        } else {
+            pad_l + (i as f32 / (n - 1) as f32) * plot_w
+        }
     };
     let y_at = |v: u32| -> f32 { pad_t + plot_h - (v as f32 / max_y) * plot_h };
 
@@ -222,8 +242,15 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
     for (i, (_, vals)) in data.samples.iter().enumerate() {
         if vals.iter().any(|v| matches!(v, Some(None))) {
             let x = x_at(i);
-            let rect = D2D_RECT_F { left: x - 1.0, top: pad_t, right: x + 1.0, bottom: pad_t + plot_h };
-            unsafe { ctx.FillRectangle(&rect, &drop_brush); }
+            let rect = D2D_RECT_F {
+                left: x - 1.0,
+                top: pad_t,
+                right: x + 1.0,
+                bottom: pad_t + plot_h,
+            };
+            unsafe {
+                ctx.FillRectangle(&rect, &drop_brush);
+            }
         }
     }
 
@@ -235,9 +262,14 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
         for (i, (_, vals)) in data.samples.iter().enumerate() {
             match vals.get(si).copied().flatten() {
                 Some(Some(v)) => {
-                    let pt = Vector2 { x: x_at(i), y: y_at(v) };
+                    let pt = Vector2 {
+                        x: x_at(i),
+                        y: y_at(v),
+                    };
                     if let Some(p0) = prev {
-                        unsafe { ctx.DrawLine(p0, pt, &brush, 1.8, None); }
+                        unsafe {
+                            ctx.DrawLine(p0, pt, &brush, 1.8, None);
+                        }
                     }
                     prev = Some(pt);
                 }
@@ -248,12 +280,19 @@ unsafe fn draw_chart(ctx: &ID2D1DeviceContext, data: &ChartData, w: f32, h: f32)
 
     // X axis time labels.
     if n > 1 {
-        unsafe { label_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?; }
+        unsafe {
+            label_fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        }
         for g in 0..=4 {
             let idx = ((g as f32 / 4.0) * (n - 1) as f32).round() as usize;
             let x = x_at(idx);
             let label = wide(&time_label(data.samples[idx].0));
-            let rect = D2D_RECT_F { left: x - 30.0, top: h - pad_b + 2.0, right: x + 30.0, bottom: h };
+            let rect = D2D_RECT_F {
+                left: x - 30.0,
+                top: h - pad_b + 2.0,
+                right: x + 30.0,
+                bottom: h,
+            };
             unsafe {
                 ctx.DrawText(
                     &label,
@@ -287,7 +326,10 @@ fn local_offset_ms() -> i64 {
         let l = GetLocalTime();
         let u = GetSystemTime();
         let to_secs = |s: &windows::Win32::Foundation::SYSTEMTIME| -> i64 {
-            s.wDay as i64 * 86_400 + s.wHour as i64 * 3600 + s.wMinute as i64 * 60 + s.wSecond as i64
+            s.wDay as i64 * 86_400
+                + s.wHour as i64 * 3600
+                + s.wMinute as i64 * 60
+                + s.wSecond as i64
         };
         (to_secs(&l) - to_secs(&u)) * 1000
     });

@@ -187,8 +187,12 @@ fn target_row(
 
     let info = vstack((
         text_block(target.name.clone()).bold(),
-        text_block(target.ip.clone()).foreground(MUTED).font_size(12.0),
-        text_block(format!("MAC: {mac_label}")).foreground(MUTED).font_size(11.0),
+        text_block(target.ip.clone())
+            .foreground(MUTED)
+            .font_size(12.0),
+        text_block(format!("MAC: {mac_label}"))
+            .foreground(MUTED)
+            .font_size(11.0),
     ))
     .spacing(2.0)
     .width(380.0);
@@ -208,15 +212,18 @@ fn target_row(
         }
     });
 
-    let down = button("\u{2193}").subtle().enabled(r + 1 < count).on_click({
-        let apply = apply.clone();
-        let targets = ctx.targets.clone();
-        move || {
-            let mut new = targets.clone();
-            new.swap(r, r + 1);
-            apply(new);
-        }
-    });
+    let down = button("\u{2193}")
+        .subtle()
+        .enabled(r + 1 < count)
+        .on_click({
+            let apply = apply.clone();
+            let targets = ctx.targets.clone();
+            move || {
+                let mut new = targets.clone();
+                new.swap(r, r + 1);
+                apply(new);
+            }
+        });
 
     let remove = button("").icon(Symbol::Delete).subtle().on_click({
         let apply = apply.clone();
@@ -294,7 +301,11 @@ fn edit_form(props: &FormProps, cx: &mut RenderCx) -> Element {
                 mac: {
                     let m = mac.borrow();
                     let m = m.trim();
-                    if m.is_empty() { None } else { Some(m.to_string()) }
+                    if m.is_empty() {
+                        None
+                    } else {
+                        Some(m.to_string())
+                    }
                 },
             };
             let mut new = props.targets.clone();
@@ -359,8 +370,11 @@ fn edit_form(props: &FormProps, cx: &mut RenderCx) -> Element {
             .placeholder_text("e.g. 0C-EF-15-C1-57-90")
             .width(FIELD_W)
             .on_text_changed(move |t: String| mac.set(t)),
-        hstack((resolve, text_block(status_val).foreground(MUTED).font_size(12.0)))
-            .spacing(12.0),
+        hstack((
+            resolve,
+            text_block(status_val).foreground(MUTED).font_size(12.0),
+        ))
+        .spacing(12.0),
         hstack((save, cancel)).spacing(8.0),
     ))
     .spacing(16.0)

@@ -92,7 +92,8 @@ fn worker(shared: Shared, cfg: Config) {
         {
             let mut st = shared.lock().unwrap();
             st.history.push(sample);
-            st.history.prune(now_ms(), cfg.history_max_age_ms, cfg.history_max_samples);
+            st.history
+                .prune(now_ms(), cfg.history_max_age_ms, cfg.history_max_samples);
             st.revision = st.revision.wrapping_add(1);
         }
         // Debounced persistence (~every 2s).
@@ -156,7 +157,10 @@ fn parse_latency(text: &str) -> Option<u32> {
 }
 
 fn norm_mac(s: &str) -> String {
-    s.chars().filter(|c| c.is_ascii_hexdigit()).flat_map(char::to_lowercase).collect()
+    s.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Format a MAC as canonical uppercase dash-separated pairs (e.g. `0C-EF-15-...`).
@@ -179,7 +183,11 @@ pub fn resolve_mac_for_ip(ip: &str, timeout_ms: u32) -> Option<String> {
         .args(["-n", "1", "-w", &timeout_ms.to_string(), ip])
         .creation_flags(NO_WINDOW)
         .output();
-    let out = Command::new("arp").arg("-a").creation_flags(NO_WINDOW).output().ok()?;
+    let out = Command::new("arp")
+        .arg("-a")
+        .creation_flags(NO_WINDOW)
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         let tokens: Vec<&str> = line.split_whitespace().collect();
@@ -196,7 +204,11 @@ pub fn resolve_mac_for_ip(ip: &str, timeout_ms: u32) -> Option<String> {
 /// Read the OS ARP table into a map of normalized-MAC -> IP.
 fn read_arp_table() -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let Ok(out) = Command::new("arp").arg("-a").creation_flags(NO_WINDOW).output() else {
+    let Ok(out) = Command::new("arp")
+        .arg("-a")
+        .creation_flags(NO_WINDOW)
+        .output()
+    else {
         return map;
     };
     let text = String::from_utf8_lossy(&out.stdout);

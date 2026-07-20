@@ -33,7 +33,11 @@ impl History {
     /// Drop samples older than `max_age_ms` and cap the total count.
     pub fn prune(&mut self, now_ms: i64, max_age_ms: i64, max_samples: usize) {
         let cutoff = now_ms - max_age_ms;
-        let first_keep = self.samples.iter().position(|s| s.t >= cutoff).unwrap_or(self.samples.len());
+        let first_keep = self
+            .samples
+            .iter()
+            .position(|s| s.t >= cutoff)
+            .unwrap_or(self.samples.len());
         if first_keep > 0 {
             self.samples.drain(..first_keep);
         }
