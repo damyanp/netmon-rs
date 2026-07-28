@@ -4,6 +4,7 @@ mod config;
 mod device;
 mod history;
 mod monitor;
+mod notification;
 mod setup;
 mod ui;
 
@@ -14,6 +15,9 @@ fn main() -> Result<()> {
     if let Err(e) = bootstrap() {
         setup::handle_missing_runtime(&e)?;
         bootstrap()?;
+    }
+    if let Err(e) = notification::initialize_app_identity() {
+        eprintln!("failed to set application identity: {e}");
     }
 
     let cfg = config::Config::load();

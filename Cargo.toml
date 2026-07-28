@@ -25,6 +25,20 @@ features = [
     "minwindef",
     "windef",
     "winnt",
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "ro",
+    "shobjidl_core",
+    "combaseapi",
+    "oaidl",
+    "objidl",
+    "objidlbase",
+    "objbase",
+    "propidlbase",
+    "propkey",
+    "propsys",
+    "wtypes",
+    "wtypesbase",
 ]
 
 [build-dependencies]

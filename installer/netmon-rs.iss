@@ -15,6 +15,8 @@
 #define AppExeName "netmon-rs.exe"
 #define AppPublisher "Damyan Pepper"
 #define AppURL "https://github.com/damyanp/netmon-rs"
+; Keep in sync with APP_USER_MODEL_ID in src\notification.rs.
+#define AppUserModelID "DamyanPepper.NetworkMonitor"
 
 [Setup]
 ; Keep this GUID stable across versions so upgrades replace, not duplicate.
@@ -54,9 +56,9 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; AppUserModelID: "{#AppUserModelID}"
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent

@@ -15,16 +15,21 @@ Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs), using
   markers where pings were dropped. Samples from before a target existed show as
   gaps, not loss.
 - **Settings pane** — adjust the ping interval and display window, clear history,
-  and add/edit/reorder/remove targets.
+  configure packet-loss notifications, test Windows notification delivery, and
+  add/edit/reorder/remove targets.
+- **Packet-loss alerts** — after 10 samples, a native Windows notification fires
+  once when any configured target rises above the threshold (15% by default).
+  The alert uses the selected display window and re-arms after recovery.
 - **Target editor** — full-detail form for each target. Optionally pin a target
   to a MAC address so it self-heals to the right IP via the ARP table, with a
   **Resolve** button that looks up the MAC for the entered host.
 - **Clean startup** — history is cleared on launch, so you never see stale
   pre-run loss.
 
-Targets, ping interval, and window size persist to `settings.json` next to the
-executable. A fresh install starts with your detected gateway plus two
-well-known internet endpoints.
+Targets, ping interval, window size, and the alert threshold persist to
+`settings.json` next to the executable. Notification presentation is subject to
+Windows notification permissions and Focus Assist. A fresh install starts with
+your detected gateway plus two well-known internet endpoints.
 
 ## Requirements
 

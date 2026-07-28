@@ -31,11 +31,12 @@ impl Target {
 }
 
 /// The set of display-window options (in minutes) the UI offers.
-pub const WINDOW_MINS: [i64; 5] = [10, 30, 60, 180, 360];
+pub const WINDOW_MINS: [i64; 7] = [1, 5, 10, 30, 60, 180, 360];
 
 pub struct Config {
     pub interval_ms: u32,
     pub window_mins: i64,
+    pub packet_loss_alert_threshold: u32,
     pub timeout_ms: u32,
     pub history_max_age_ms: i64,
     pub history_max_samples: usize,
@@ -48,6 +49,7 @@ impl Default for Config {
         Self {
             interval_ms: 1000,
             window_mins: 10,
+            packet_loss_alert_threshold: 15,
             timeout_ms: 1500,
             history_max_age_ms: 6 * 60 * 60 * 1000,
             history_max_samples: 60_000,
@@ -68,7 +70,7 @@ fn default_targets() -> Vec<Target> {
     ]
 }
 
-/// On-disk settings schema (v2). Fields default individually so a v1 file
+/// On-disk settings schema (v3). Fields default individually so older files
 /// (`{"intervalMs":N}`) still parses and migrates cleanly.
 #[derive(Serialize, Deserialize)]
 struct Settings {
@@ -78,18 +80,26 @@ struct Settings {
     interval_ms: u32,
     #[serde(rename = "windowMins", default = "default_window")]
     window_mins: i64,
+    #[serde(
+        rename = "packetLossAlertThreshold",
+        default = "default_packet_loss_alert_threshold"
+    )]
+    packet_loss_alert_threshold: u32,
     #[serde(default)]
     targets: Vec<Target>,
 }
 
 fn default_version() -> u32 {
-    2
+    3
 }
 fn default_interval() -> u32 {
     1000
 }
 fn default_window() -> i64 {
     10
+}
+fn default_packet_loss_alert_threshold() -> u32 {
+    15
 }
 
 impl Config {
@@ -104,13 +114,20 @@ impl Config {
             Some(s) => {
                 cfg.interval_ms = clamp_interval(s.interval_ms);
                 cfg.window_mins = clamp_window(s.window_mins);
+                cfg.packet_loss_alert_threshold =
+                    clamp_packet_loss_alert_threshold(s.packet_loss_alert_threshold);
                 if !s.targets.is_empty() {
                     cfg.targets = s.targets;
                 }
             }
             None => {
                 // First run (or an unreadable file): persist the seeded defaults.
-                save_settings(cfg.interval_ms, cfg.window_mins, &cfg.targets);
+                save_settings(
+                    cfg.interval_ms,
+                    cfg.window_mins,
+                    cfg.packet_loss_alert_threshold,
+                    &cfg.targets,
+                );
             }
         }
         cfg
@@ -131,12 +148,22 @@ pub fn clamp_window(mins: i64) -> i64 {
     }
 }
 
+pub fn clamp_packet_loss_alert_threshold(percent: u32) -> u32 {
+    percent.min(100)
+}
+
 /// Persist all settings to `settings.json`.
-pub fn save_settings(interval_ms: u32, window_mins: i64, targets: &[Target]) {
+pub fn save_settings(
+    interval_ms: u32,
+    window_mins: i64,
+    packet_loss_alert_threshold: u32,
+    targets: &[Target],
+) {
     let settings = Settings {
-        version: 2,
+        version: 3,
         interval_ms,
         window_mins,
+        packet_loss_alert_threshold,
         targets: targets.to_vec(),
     };
     if let Ok(json) = serde_json::to_string_pretty(&settings) {
@@ -190,4 +217,25 @@ pub fn settings_path() -> PathBuf {
 
 pub fn history_path() -> PathBuf {
     data_dir().join("history.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Settings, clamp_packet_loss_alert_threshold, default_packet_loss_alert_threshold};
+
+    #[test]
+    fn older_settings_default_the_alert_threshold() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"version":2,"intervalMs":1000,"windowMins":10}"#).unwrap();
+        assert_eq!(
+            settings.packet_loss_alert_threshold,
+            default_packet_loss_alert_threshold()
+        );
+    }
+
+    #[test]
+    fn clamps_alert_threshold_to_a_percentage() {
+        assert_eq!(clamp_packet_loss_alert_threshold(15), 15);
+        assert_eq!(clamp_packet_loss_alert_threshold(101), 100);
+    }
 }

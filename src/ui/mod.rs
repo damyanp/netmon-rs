@@ -63,30 +63,27 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         }
     });
 
-    // Settings state. Interval + targets mirror the monitor's shared state;
-    // window is UI-only (drives the chart/cards time span).
+    // Settings state mirrors the monitor's shared state. Window also drives the
+    // chart/cards time span.
     let (settings_open, set_settings_open) = cx.use_state(false);
     let (interval_idx, set_interval_idx) =
         cx.use_state(interval_to_index(shared.lock().unwrap().interval_ms));
     let (window_idx, set_window_idx) = cx.use_state(window_to_index(init_window));
+    let (alert_threshold, set_alert_threshold) =
+        cx.use_state(shared.lock().unwrap().packet_loss_alert_threshold);
+    let (notification_status, set_notification_status) = cx.use_state(String::new());
     let (edit_targets, set_targets) =
         cx.use_state::<Vec<Target>>(shared.lock().unwrap().targets.clone());
     let (editing, set_editing) = cx.use_state(Editing::Closed);
     // Bumped to force the edit form to re-render (e.g. after resolving a MAC),
     // since a nested component can't re-render itself via its own state.
     let (form_tick, set_form_tick) = cx.use_state(0i32);
-    let window_mins = WINDOW_MINS[window_idx.clamp(0, 4) as usize];
+    let window_mins = WINDOW_MINS[window_idx.clamp(0, WINDOW_MINS.len() as i32 - 1) as usize];
 
     // Snapshot the state needed to render.
     let (cards_info, revision, worst_loss) = {
         let st = shared.lock().unwrap();
         let cutoff = now_ms() - window_mins * 60_000;
-        let win: Vec<&crate::history::Sample> = st
-            .history
-            .samples
-            .iter()
-            .filter(|s| s.t >= cutoff)
-            .collect();
         let last = st.history.samples.last();
         let mut worst = 0u32;
         let infos: Vec<CardInfo> = st
@@ -96,16 +93,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             .map(|(i, t)| {
                 // Only samples that measured this target count toward loss.
                 // Samples from before it was added simply have no data.
-                let measured = win.iter().filter(|s| s.v.contains_key(&t.name)).count();
-                let drops = win
-                    .iter()
-                    .filter(|s| matches!(s.v.get(&t.name), Some(None)))
-                    .count();
-                let loss = if measured > 0 {
-                    (drops * 100 / measured) as u32
-                } else {
-                    0
-                };
+                let (measured, loss) = crate::monitor::target_loss(&st.history, &t.name, cutoff);
                 worst = worst.max(loss);
                 let current = last.and_then(|s| s.v.get(&t.name).copied().flatten());
                 CardInfo {
@@ -248,13 +236,17 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             shared: shared.clone(),
             interval_idx,
             window_idx,
+            alert_threshold,
             targets: edit_targets,
             editing,
+            notification_status,
             set_open: set_settings_open,
             set_interval_idx,
             set_window_idx,
+            set_alert_threshold,
             set_targets,
             set_editing,
+            set_notification_status,
             form_tick,
             set_form_tick,
         })

@@ -2,7 +2,7 @@
 //! target IPs by MAC via the ARP table, and appends results to shared history.
 //! Runs on a worker thread; the UI only reads the shared state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{self, Config, Target};
 use crate::history::{History, Sample};
+use crate::notification;
 
 /// Hide the console window spawned by `ping`/`arp` (CREATE_NO_WINDOW).
 const NO_WINDOW: u32 = 0x0800_0000;
@@ -19,6 +20,8 @@ const NO_WINDOW: u32 = 0x0800_0000;
 pub struct AppState {
     pub history: History,
     pub interval_ms: u32,
+    pub window_mins: i64,
+    pub packet_loss_alert_threshold: u32,
     pub targets: Vec<Target>,
     /// Bumped whenever a new sample lands, so the UI can cheaply detect changes.
     pub revision: u64,
@@ -41,6 +44,8 @@ pub fn init_shared(cfg: &Config) -> Shared {
     Arc::new(Mutex::new(AppState {
         history: History::default(),
         interval_ms: cfg.interval_ms,
+        window_mins: cfg.window_mins,
+        packet_loss_alert_threshold: cfg.packet_loss_alert_threshold,
         targets: cfg.targets.clone(),
         revision: 0,
     }))
@@ -63,10 +68,15 @@ pub fn spawn(shared: Shared, cfg: Config) {
 }
 
 fn worker(shared: Shared, cfg: Config) {
+    if let Err(e) = unsafe { windows::ro::RoInitialize(windows::ro::RO_INIT_MULTITHREADED) }.ok() {
+        eprintln!("failed to initialize Windows Runtime on monitor thread: {e}");
+    }
+
     // `None` means "never resolved yet", so the first loop iteration resolves
     // immediately. Avoids `Instant - Duration`, which panics on short uptimes.
     let mut last_resolve: Option<Instant> = None;
     let mut last_save = Instant::now();
+    let mut alerted_targets = HashSet::new();
 
     loop {
         // Snapshot the mutable bits under the lock, then release it for the
@@ -89,12 +99,25 @@ fn worker(shared: Shared, cfg: Config) {
         }
 
         let sample = take_sample(&targets, cfg.timeout_ms);
-        {
+        let alerts = {
             let mut st = shared.lock().unwrap();
             st.history.push(sample);
             st.history
                 .prune(now_ms(), cfg.history_max_age_ms, cfg.history_max_samples);
             st.revision = st.revision.wrapping_add(1);
+            evaluate_alerts(
+                &st.history,
+                &st.targets,
+                st.window_mins,
+                st.packet_loss_alert_threshold,
+                &mut alerted_targets,
+                now_ms(),
+            )
+        };
+        if !alerts.is_empty()
+            && let Err(e) = notification::show_packet_loss_alert(&alerts)
+        {
+            eprintln!("failed to show packet-loss notification: {e}");
         }
         // Debounced persistence (~every 2s).
         if last_save.elapsed() >= Duration::from_secs(2) {
@@ -105,6 +128,185 @@ fn worker(shared: Shared, cfg: Config) {
         }
 
         thread::sleep(Duration::from_millis(interval_ms as u64));
+    }
+}
+
+pub fn target_loss(history: &History, target_name: &str, cutoff: i64) -> (usize, u32) {
+    let samples = history.samples.iter().filter(|sample| sample.t >= cutoff);
+    let measured = samples
+        .clone()
+        .filter(|sample| sample.v.contains_key(target_name))
+        .count();
+    let drops = samples
+        .filter(|sample| matches!(sample.v.get(target_name), Some(None)))
+        .count();
+    let loss = if measured > 0 {
+        (drops * 100 / measured) as u32
+    } else {
+        0
+    };
+    (measured, loss)
+}
+
+fn evaluate_alerts(
+    history: &History,
+    targets: &[Target],
+    window_mins: i64,
+    threshold: u32,
+    alerted_targets: &mut HashSet<String>,
+    now: i64,
+) -> Vec<(String, u32)> {
+    let current_names: HashSet<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+    alerted_targets.retain(|name| current_names.contains(name.as_str()));
+
+    let cutoff = now - window_mins * 60_000;
+    let mut newly_alerting = Vec::new();
+    for target in targets {
+        let (measured, loss) = target_loss(history, &target.name, cutoff);
+        let above = measured >= 10 && loss > threshold;
+        if above {
+            if alerted_targets.insert(target.name.clone()) {
+                newly_alerting.push((target.name.clone(), loss));
+            }
+        } else {
+            alerted_targets.remove(&target.name);
+        }
+    }
+    newly_alerting
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{evaluate_alerts, target_loss};
+    use crate::config::Target;
+    use crate::history::{History, Sample};
+    use std::collections::{BTreeMap, HashSet};
+
+    fn history(name: &str, drops: usize, replies: usize, now: i64) -> History {
+        let mut samples = Vec::new();
+        for i in 0..(drops + replies) {
+            let mut values = BTreeMap::new();
+            values.insert(name.to_string(), (i >= drops).then_some(10));
+            samples.push(Sample {
+                t: now - i as i64,
+                v: values,
+            });
+        }
+        History { samples }
+    }
+
+    #[test]
+    fn calculates_loss_for_measured_samples() {
+        let history = history("Router", 2, 8, 1_000);
+        assert_eq!(target_loss(&history, "Router", 0), (10, 20));
+        assert_eq!(target_loss(&history, "Other", 0), (0, 0));
+    }
+
+    #[test]
+    fn waits_for_ten_samples_and_uses_strict_threshold() {
+        let target = Target::new("Router", "192.168.1.1", None);
+        let mut alerted = HashSet::new();
+        assert!(
+            evaluate_alerts(
+                &history("Router", 9, 0, 1_000),
+                std::slice::from_ref(&target),
+                10,
+                15,
+                &mut alerted,
+                1_000,
+            )
+            .is_empty()
+        );
+        assert!(
+            evaluate_alerts(
+                &history("Router", 3, 17, 1_000),
+                std::slice::from_ref(&target),
+                10,
+                15,
+                &mut alerted,
+                1_000,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn alerts_once_then_rearms_after_recovery() {
+        let target = Target::new("Router", "192.168.1.1", None);
+        let mut alerted = HashSet::new();
+        let unhealthy = history("Router", 2, 8, 1_000);
+        assert_eq!(
+            evaluate_alerts(
+                &unhealthy,
+                std::slice::from_ref(&target),
+                10,
+                15,
+                &mut alerted,
+                1_000,
+            ),
+            vec![("Router".to_string(), 20)]
+        );
+        assert!(
+            evaluate_alerts(
+                &unhealthy,
+                std::slice::from_ref(&target),
+                10,
+                15,
+                &mut alerted,
+                1_000,
+            )
+            .is_empty()
+        );
+
+        let healthy = history("Router", 0, 10, 1_000);
+        assert!(
+            evaluate_alerts(
+                &healthy,
+                std::slice::from_ref(&target),
+                10,
+                15,
+                &mut alerted,
+                1_000,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            evaluate_alerts(
+                &unhealthy,
+                std::slice::from_ref(&target),
+                10,
+                15,
+                &mut alerted,
+                1_000,
+            ),
+            vec![("Router".to_string(), 20)]
+        );
+    }
+
+    #[test]
+    fn combines_crossings_and_forgets_removed_targets() {
+        let targets = vec![
+            Target::new("Router", "192.168.1.1", None),
+            Target::new("Internet", "8.8.8.8", None),
+        ];
+        let mut combined = History::default();
+        for i in 0..10 {
+            let mut values = BTreeMap::new();
+            values.insert("Router".to_string(), (i >= 2).then_some(10));
+            values.insert("Internet".to_string(), (i >= 3).then_some(10));
+            combined.samples.push(Sample {
+                t: 1_000 - i,
+                v: values,
+            });
+        }
+        let mut alerted = HashSet::new();
+        assert_eq!(
+            evaluate_alerts(&combined, &targets, 10, 15, &mut alerted, 1_000),
+            vec![("Router".to_string(), 20), ("Internet".to_string(), 30),]
+        );
+
+        evaluate_alerts(&combined, &targets[1..], 10, 15, &mut alerted, 1_000);
+        assert!(!alerted.contains("Router"));
     }
 }
 
