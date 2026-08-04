@@ -15,7 +15,6 @@ use windows_reactor::*;
 use crate::config::{Target, WINDOW_MINS};
 use crate::device::{Device, Gpu, gpu_context};
 use crate::monitor::{Shared, now_ms};
-use crate::network_info::DeviceNetworkInfo;
 use cards::card_element;
 use chart::{ChartProps, chart_view};
 use settings::{Editing, SettingsCtx, interval_to_index, settings_panel, window_to_index};
@@ -51,7 +50,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     cx.use_effect((), || window_icon::set_app_window_icon());
 
     // 1 Hz refresh: bump a counter so the view re-reads shared state.
-    let (_tick, bump_tick) = cx.use_reducer::<u64>(0);
+    let (tick, bump_tick) = cx.use_reducer::<u64>(0);
     let timer = cx.use_ref::<Option<DispatcherTimer>>(None);
     cx.use_effect((), move || {
         if timer.borrow().is_none() {
@@ -64,12 +63,9 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         }
     });
 
-    let (network_info, set_network_info) = cx.use_state(DeviceNetworkInfo::default());
-    cx.use_effect((), move || {
-        std::thread::spawn(move || {
-            let info = crate::network_info::query();
-            set_network_info.set(info);
-        });
+    let (network_info, set_network_info) = cx.use_async_state(Default::default());
+    cx.use_effect(tick / 60, move || {
+        std::thread::spawn(move || set_network_info.call(crate::network_info::query()));
     });
 
     // Settings state mirrors the monitor's shared state. Window also drives the
@@ -149,27 +145,33 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     ))
     .columns([GridLength::STAR, GridLength::Auto]);
 
-    let device_info = vstack((
-        text_block("This device")
-            .font_size(14.0)
-            .bold()
-            .foreground(Color::rgb(0x8b, 0x94, 0x9e)),
-        text_block(network_info.summary()).font_size(12.0),
-    ))
-    .spacing(4.0)
-    .padding(Thickness::uniform(12.0))
-    .background(Color::rgb(0x16, 0x1b, 0x22));
-
     // Responsive layout: cards share the available width equally and their
     // sparklines scale with them. Below a minimum card width (or a short window),
     // drop the cards and show just the combined chart with a color legend.
     let size = cx.use_inner_size();
     let pad = 24.0_f64;
     let gap = 16.0_f64;
-    let n = cards_info.len().max(1) as f64;
+    let n = (cards_info.len() + 1).max(1) as f64;
     let avail_w = size.width - 2.0 * pad;
     let card_w = ((avail_w - (n - 1.0) * gap) / n).max(80.0);
     let compact = size.width > 0.0 && (card_w < 170.0 || size.height < 520.0);
+
+    let device_card = vstack((
+        text_block("This device").foreground(Color::rgb(0x8b, 0x94, 0x9e)),
+        text_block(network_info.adapter_name())
+            .foreground(Color::rgb(0x8b, 0x94, 0x9e))
+            .font_size(11.0),
+        text_block(network_info.primary_address())
+            .font_size(20.0)
+            .bold(),
+        text_block(network_info.connection_details(now_ms()))
+            .foreground(Color::rgb(0x8b, 0x94, 0x9e))
+            .font_size(11.0),
+    ))
+    .spacing(4.0)
+    .padding(Thickness::uniform(16.0))
+    .background(Color::rgb(0x16, 0x1b, 0x22))
+    .width(card_w);
 
     let chart_w = if avail_w > 160.0 {
         avail_w
@@ -212,35 +214,31 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         )
         .spacing(16.0);
 
-        vstack((header, device_info, legend, chart))
+        vstack((header, legend, chart))
             .spacing(16.0)
             .padding(Thickness::uniform(24.0))
             .with_key("dashboard-compact")
     } else {
-        let cards_row = hstack(
-            cards_info
-                .iter()
-                .map(|c| {
-                    card_element(
-                        &shared,
-                        &c.name,
-                        &c.ip,
-                        c.index,
-                        c.current,
-                        c.loss,
-                        c.measured,
-                        revision,
-                        window_mins,
-                        card_w,
-                    )
-                })
-                .collect::<Vec<Element>>(),
-        )
-        .spacing(16.0);
+        let cards = std::iter::once(device_card.into())
+            .chain(cards_info.iter().map(|c| {
+                card_element(
+                    &shared,
+                    &c.name,
+                    &c.ip,
+                    c.index,
+                    c.current,
+                    c.loss,
+                    c.measured,
+                    revision,
+                    window_mins,
+                    card_w,
+                )
+            }))
+            .collect::<Vec<Element>>();
+        let cards_row = hstack(cards).spacing(16.0);
 
         vstack((
             header,
-            device_info,
             cards_row,
             text_block("Latency over time (ms) - red marks = packet dropped")
                 .foreground(Color::rgb(0x8b, 0x94, 0x9e))
