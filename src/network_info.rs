@@ -1,35 +1,25 @@
 //! Local adapter information shown on the dashboard.
 
-use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::collections::HashMap;
+use std::ffi::CStr;
+use std::net::Ipv4Addr;
 
-use serde::Deserialize;
-
-const NO_WINDOW: u32 = 0x0800_0000;
+use windows::ifdef::IfOperStatusUp;
+use windows::iphlpapi::{GetAdaptersAddresses, GetAdaptersInfo};
+use windows::iptypes::{
+    GAA_FLAG_INCLUDE_GATEWAYS, IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_INFO, IP_ADDR_STRING,
+};
+use windows::minwinbase::SYSTEMTIME;
+use windows::minwindef::FILETIME;
+use windows::timezoneapi::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+use windows::winerror::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+use windows::ws2::{AF_INET, SOCKADDR_IN, SOCKET_ADDRESS};
 
 #[derive(Clone, PartialEq)]
 pub enum DeviceNetworkInfo {
     Loading,
     Loaded(Vec<AdapterInfo>),
     Error(String),
-}
-
-fn format_remaining(remaining_ms: i64) -> String {
-    if remaining_ms <= 0 {
-        return "expired".to_string();
-    }
-
-    let total_minutes = (remaining_ms + 59_999) / 60_000;
-    let days = total_minutes / (24 * 60);
-    let hours = total_minutes % (24 * 60) / 60;
-    let minutes = total_minutes % 60;
-    if days > 0 {
-        format!("{days}d {hours}h {minutes}m")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
-    }
 }
 
 impl Default for DeviceNetworkInfo {
@@ -39,14 +29,6 @@ impl Default for DeviceNetworkInfo {
 }
 
 impl DeviceNetworkInfo {
-    pub fn adapters(adapters: Vec<AdapterInfo>) -> Self {
-        Self::Loaded(adapters)
-    }
-
-    pub fn error(message: impl Into<String>) -> Self {
-        Self::Error(message.into())
-    }
-
     pub fn primary_address(&self) -> String {
         match self {
             Self::Loading => "Loading...".to_string(),
@@ -87,20 +69,23 @@ pub struct AdapterInfo {
     pub subnet_prefix: u32,
     pub gateway: Option<String>,
     pub dhcp_server: Option<String>,
-    pub lease_obtained: Option<String>,
-    pub lease_expires: Option<String>,
+    pub lease_obtained_ms: Option<i64>,
     pub lease_expires_ms: Option<i64>,
 }
 
 impl AdapterInfo {
     fn connection_details(&self, now_ms: i64) -> String {
         let gateway = self.gateway.as_deref().unwrap_or("not reported");
-        match (
-            self.dhcp_server.as_deref(),
-            self.lease_obtained.as_deref(),
-            self.lease_expires.as_deref(),
-        ) {
-            (Some(server), Some(obtained), Some(expires)) => {
+        match self.dhcp_server.as_deref() {
+            Some(server) => {
+                let obtained = self
+                    .lease_obtained_ms
+                    .map(format_timestamp)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let expires = self
+                    .lease_expires_ms
+                    .map(format_timestamp)
+                    .unwrap_or_else(|| "unknown".to_string());
                 let remaining = self
                     .lease_expires_ms
                     .map(|expires_ms| format_remaining(expires_ms - now_ms))
@@ -109,170 +94,218 @@ impl AdapterInfo {
                     "Gateway: {gateway}\nDHCP: {server}\nLease: {obtained}\nto {expires}\nExpires in: {remaining}"
                 )
             }
-            (Some(server), _, _) => format!("Gateway: {gateway}\nDHCP: {server}"),
-            _ => format!("Gateway: {gateway}\nDHCP: not enabled"),
+            None => format!("Gateway: {gateway}\nDHCP: not enabled"),
         }
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct PowerShellAdapter {
-    interface_alias: String,
-    #[serde(rename = "IPAddress")]
-    ip_address: String,
-    prefix_length: u32,
-    #[serde(
-        rename = "DefaultGateway",
-        default,
-        deserialize_with = "string_or_first"
-    )]
-    default_gateway: Option<String>,
-    #[serde(rename = "DHCPServer", default, deserialize_with = "string_or_first")]
-    dhcp_server: Option<String>,
-    #[serde(rename = "LeaseObtained", default)]
-    lease_obtained: Option<String>,
-    #[serde(rename = "LeaseExpires", default)]
-    lease_expires: Option<String>,
-    #[serde(rename = "LeaseExpiresMs", default)]
-    lease_expires_ms: Option<i64>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum StringOrList {
-    String(String),
-    List(Vec<String>),
-}
-
-fn string_or_first<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<StringOrList>::deserialize(deserializer)?
-        .and_then(|value| match value {
-            StringOrList::String(value) => Some(value),
-            StringOrList::List(values) => values.into_iter().next(),
-        })
-        .filter(|value| !value.is_empty()))
+#[derive(Default)]
+struct DhcpInfo {
+    server: Option<String>,
+    obtained_ms: Option<i64>,
+    expires_ms: Option<i64>,
 }
 
 pub fn query() -> DeviceNetworkInfo {
-    let script = r#"
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-@(
-  Get-NetIPConfiguration |
-    Where-Object { $_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address } |
-    ForEach-Object {
-      $cfg = $_
-      $ip = @($cfg.IPv4Address)[0]
-      $dhcp = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "InterfaceIndex=$($cfg.InterfaceIndex)"
-      [pscustomobject]@{
-        InterfaceAlias = $cfg.InterfaceAlias
-        IPAddress = $ip.IPAddress
-        PrefixLength = $ip.PrefixLength
-        DefaultGateway = @($cfg.IPv4DefaultGateway.NextHop)
-        DHCPServer = $dhcp.DHCPServer
-        LeaseObtained = if ($dhcp.DHCPLeaseObtained) { $dhcp.DHCPLeaseObtained.ToString('g') } else { $null }
-        LeaseExpires = if ($dhcp.DHCPLeaseExpires) { $dhcp.DHCPLeaseExpires.ToString('g') } else { $null }
-        LeaseExpiresMs = if ($dhcp.DHCPLeaseExpires) { [DateTimeOffset]$dhcp.DHCPLeaseExpires | ForEach-Object { $_.ToUnixTimeMilliseconds() } } else { $null }
-      }
-    }
-) | ConvertTo-Json -Compress
-"#;
-
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-OutputFormat",
-            "Text",
-            "-Command",
-            script,
-        ])
-        .creation_flags(NO_WINDOW)
-        .output();
-    let Ok(output) = output else {
-        return DeviceNetworkInfo::error("PowerShell could not be started");
-    };
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        let error = error.trim();
-        return DeviceNetworkInfo::error(if error.is_empty() {
-            "the Windows network query failed"
-        } else {
-            error
-        });
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let text = text.trim();
-    if text.is_empty() {
-        return DeviceNetworkInfo::Loaded(Vec::new());
-    }
-    let parsed = parse_adapters(text);
-    match parsed {
-        Ok(adapters) => DeviceNetworkInfo::adapters(
-            adapters
-                .into_iter()
-                .map(|adapter| AdapterInfo {
-                    name: adapter.interface_alias,
-                    ip_address: adapter.ip_address,
-                    subnet_prefix: adapter.prefix_length,
-                    gateway: adapter.default_gateway,
-                    dhcp_server: adapter.dhcp_server,
-                    lease_obtained: adapter.lease_obtained,
-                    lease_expires: adapter.lease_expires,
-                    lease_expires_ms: adapter.lease_expires_ms,
-                })
-                .collect(),
-        ),
-        Err(error) => DeviceNetworkInfo::error(format!("invalid query response: {error}")),
+    match query_native() {
+        Ok(adapters) => DeviceNetworkInfo::Loaded(adapters),
+        Err(error) => DeviceNetworkInfo::Error(error),
     }
 }
 
-fn parse_adapters(text: &str) -> serde_json::Result<Vec<PowerShellAdapter>> {
-    if text.trim_start().starts_with('[') {
-        serde_json::from_str(text)
+fn query_native() -> Result<Vec<AdapterInfo>, String> {
+    let dhcp = query_dhcp_info()?;
+    let buffer = get_adapters_addresses()?;
+    let mut adapters = Vec::new();
+
+    // The buffer owns every node and nested pointer for the duration of this walk.
+    unsafe {
+        let mut adapter = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        while let Some(current) = adapter.as_ref() {
+            if current.OperStatus != IfOperStatusUp || current.FirstGatewayAddress.is_null() {
+                adapter = current.Next;
+                continue;
+            }
+            let mut unicast = current.FirstUnicastAddress;
+            while let Some(address) = unicast.as_ref() {
+                if let Some(ip_address) = socket_ipv4(&address.Address) {
+                    let details = dhcp.get(&ip_address);
+                    adapters.push(AdapterInfo {
+                        name: wide_string(current.FriendlyName),
+                        ip_address,
+                        subnet_prefix: address.OnLinkPrefixLength as u32,
+                        gateway: current
+                            .FirstGatewayAddress
+                            .as_ref()
+                            .and_then(|gateway| socket_ipv4(&gateway.Address)),
+                        dhcp_server: details.and_then(|info| info.server.clone()),
+                        lease_obtained_ms: details.and_then(|info| info.obtained_ms),
+                        lease_expires_ms: details.and_then(|info| info.expires_ms),
+                    });
+                    break;
+                }
+                unicast = address.Next;
+            }
+            adapter = current.Next;
+        }
+    }
+
+    Ok(adapters)
+}
+
+fn get_adapters_addresses() -> Result<Vec<u8>, String> {
+    let mut size = 15_000u32;
+    loop {
+        let mut buffer = vec![0u8; size as usize];
+        let result = unsafe {
+            GetAdaptersAddresses(
+                AF_INET,
+                GAA_FLAG_INCLUDE_GATEWAYS,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                &mut size,
+            )
+        };
+        if result == NO_ERROR {
+            return Ok(buffer);
+        }
+        if result != ERROR_BUFFER_OVERFLOW {
+            return Err(format!("GetAdaptersAddresses failed with error {result}"));
+        }
+    }
+}
+
+fn query_dhcp_info() -> Result<HashMap<String, DhcpInfo>, String> {
+    let mut size = 0u32;
+    let first = unsafe { GetAdaptersInfo(None, &mut size) };
+    if first != ERROR_BUFFER_OVERFLOW {
+        return Err(format!("GetAdaptersInfo sizing failed with error {first}"));
+    }
+
+    let mut buffer = vec![0u8; size as usize];
+    let result = unsafe {
+        GetAdaptersInfo(
+            Some(buffer.as_mut_ptr().cast::<IP_ADAPTER_INFO>()),
+            &mut size,
+        )
+    };
+    if result != NO_ERROR {
+        return Err(format!("GetAdaptersInfo failed with error {result}"));
+    }
+
+    let mut result = HashMap::new();
+    unsafe {
+        let mut adapter = buffer.as_ptr() as *const IP_ADAPTER_INFO;
+        while let Some(current) = adapter.as_ref() {
+            let details = if current.DhcpEnabled != 0 {
+                DhcpInfo {
+                    server: ip_addr_string(&current.DhcpServer),
+                    obtained_ms: unix_seconds_to_ms(current.LeaseObtained.0),
+                    expires_ms: unix_seconds_to_ms(current.LeaseExpires.0),
+                }
+            } else {
+                DhcpInfo::default()
+            };
+            if let Some(ip_address) = ip_addr_string(&current.IpAddressList) {
+                result.insert(ip_address, details);
+            }
+            adapter = current.Next;
+        }
+    }
+    Ok(result)
+}
+
+unsafe fn socket_ipv4(address: &SOCKET_ADDRESS) -> Option<String> {
+    if address.lpSockaddr.is_null() || address.iSockaddrLength < size_of::<SOCKADDR_IN>() as i32 {
+        return None;
+    }
+    let socket = unsafe { &*address.lpSockaddr.cast::<SOCKADDR_IN>() };
+    if socket.sin_family.0 as u32 != AF_INET {
+        return None;
+    }
+    let bytes = unsafe { socket.sin_addr.S_un.S_un_b };
+    Some(Ipv4Addr::new(bytes.s_b1, bytes.s_b2, bytes.s_b3, bytes.s_b4).to_string())
+}
+
+unsafe fn wide_string(value: windows::winnt::PWCHAR) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    while unsafe { *value.add(len) } != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(value, len) })
+}
+
+fn ip_addr_string(value: &IP_ADDR_STRING) -> Option<String> {
+    let ptr = value.IpAddress.String.as_ptr().cast();
+    let value = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
+    (!value.is_empty() && value != "0.0.0.0").then(|| value.into_owned())
+}
+
+fn unix_seconds_to_ms(value: i64) -> Option<i64> {
+    (value > 0).then(|| value.saturating_mul(1000))
+}
+
+fn format_remaining(remaining_ms: i64) -> String {
+    if remaining_ms <= 0 {
+        return "expired".to_string();
+    }
+
+    let total_seconds = (remaining_ms + 999) / 1000;
+    let days = total_seconds / (24 * 60 * 60);
+    let hours = total_seconds % (24 * 60 * 60) / (60 * 60);
+    let minutes = total_seconds % (60 * 60) / 60;
+    let seconds = total_seconds % 60;
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m {seconds}s")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
     } else {
-        serde_json::from_str(text).map(|adapter| vec![adapter])
+        format!("{seconds}s")
+    }
+}
+
+fn format_timestamp(timestamp_ms: i64) -> String {
+    const WINDOWS_EPOCH_OFFSET_SECS: i64 = 11_644_473_600;
+    let ticks = (timestamp_ms / 1000 + WINDOWS_EPOCH_OFFSET_SECS) as u64 * 10_000_000;
+    let file_time = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut local = SYSTEMTIME::default();
+    if unsafe { FileTimeToSystemTime(&file_time, &mut utc) }.as_bool()
+        && unsafe { SystemTimeToTzSpecificLocalTime(None, &utc, &mut local) }.as_bool()
+    {
+        let (hour, suffix) = match local.wHour {
+            0 => (12, "AM"),
+            1..=11 => (local.wHour, "AM"),
+            12 => (12, "PM"),
+            hour => (hour - 12, "PM"),
+        };
+        format!(
+            "{}/{}/{} {}:{:02} {}",
+            local.wMonth, local.wDay, local.wYear, hour, local.wMinute, suffix
+        )
+    } else {
+        "unknown".to_string()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_remaining, parse_adapters};
-
-    #[test]
-    fn parses_adapter_information() {
-        let adapters = parse_adapters(
-            r#"[{"InterfaceAlias":"Ethernet","IPAddress":"192.168.1.20","PrefixLength":24,"DefaultGateway":["192.168.1.1"],"DHCPServer":"192.168.1.1","LeaseObtained":"8/4/2026 1:00 PM","LeaseExpires":"8/5/2026 1:00 PM"}]"#,
-        )
-        .unwrap();
-
-        assert_eq!(adapters[0].interface_alias, "Ethernet");
-        assert_eq!(adapters[0].default_gateway.as_deref(), Some("192.168.1.1"));
-        assert_eq!(adapters[0].dhcp_server.as_deref(), Some("192.168.1.1"));
-    }
-
-    #[test]
-    fn parses_single_adapter_object() {
-        let adapters = parse_adapters(
-            r#"{"InterfaceAlias":"Wi-Fi","IPAddress":"10.0.0.2","PrefixLength":24,"DefaultGateway":"10.0.0.1","DHCPServer":"10.0.0.1","LeaseObtained":null,"LeaseExpires":null}"#,
-        )
-        .unwrap();
-
-        assert_eq!(adapters.len(), 1);
-        assert_eq!(adapters[0].interface_alias, "Wi-Fi");
-    }
+    use super::format_remaining;
 
     #[test]
     fn formats_lease_countdown() {
         assert_eq!(format_remaining(0), "expired");
-        assert_eq!(format_remaining(60_000), "1m");
-        assert_eq!(format_remaining(3_660_000), "1h 1m");
-        assert_eq!(format_remaining(90_060_000), "1d 1h 1m");
+        assert_eq!(format_remaining(1_000), "1s");
+        assert_eq!(format_remaining(61_000), "1m 1s");
+        assert_eq!(format_remaining(3_661_000), "1h 1m 1s");
+        assert_eq!(format_remaining(90_061_000), "1d 1h 1m 1s");
     }
 }
