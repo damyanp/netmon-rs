@@ -11,6 +11,8 @@ Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs), using
 
 - **Per-target cards** — name, IP, current latency, packet-loss %, and a
   sparkline of recent samples.
+- **Device network details** — active IPv4 addresses, subnet prefixes, gateways,
+  DHCP servers, and current lease times.
 - **Latency chart** — all targets over a configurable time window, with red
   markers where pings were dropped. Samples from before a target existed show as
   gaps, not loss.

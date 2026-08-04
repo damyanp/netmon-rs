@@ -4,6 +4,7 @@ mod config;
 mod device;
 mod history;
 mod monitor;
+mod network_info;
 mod notification;
 mod setup;
 mod ui;

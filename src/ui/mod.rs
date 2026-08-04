@@ -15,6 +15,7 @@ use windows_reactor::*;
 use crate::config::{Target, WINDOW_MINS};
 use crate::device::{Device, Gpu, gpu_context};
 use crate::monitor::{Shared, now_ms};
+use crate::network_info::DeviceNetworkInfo;
 use cards::card_element;
 use chart::{ChartProps, chart_view};
 use settings::{Editing, SettingsCtx, interval_to_index, settings_panel, window_to_index};
@@ -61,6 +62,14 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                 Err(e) => eprintln!("failed to start refresh timer: {e}"),
             }
         }
+    });
+
+    let (network_info, set_network_info) = cx.use_state(DeviceNetworkInfo::default());
+    cx.use_effect((), move || {
+        std::thread::spawn(move || {
+            let info = crate::network_info::query();
+            set_network_info.set(info);
+        });
     });
 
     // Settings state mirrors the monitor's shared state. Window also drives the
@@ -140,6 +149,17 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     ))
     .columns([GridLength::STAR, GridLength::Auto]);
 
+    let device_info = vstack((
+        text_block("This device")
+            .font_size(14.0)
+            .bold()
+            .foreground(Color::rgb(0x8b, 0x94, 0x9e)),
+        text_block(network_info.summary()).font_size(12.0),
+    ))
+    .spacing(4.0)
+    .padding(Thickness::uniform(12.0))
+    .background(Color::rgb(0x16, 0x1b, 0x22));
+
     // Responsive layout: cards share the available width equally and their
     // sparklines scale with them. Below a minimum card width (or a short window),
     // drop the cards and show just the combined chart with a color legend.
@@ -192,7 +212,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         )
         .spacing(16.0);
 
-        vstack((header, legend, chart))
+        vstack((header, device_info, legend, chart))
             .spacing(16.0)
             .padding(Thickness::uniform(24.0))
             .with_key("dashboard-compact")
@@ -220,6 +240,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
 
         vstack((
             header,
+            device_info,
             cards_row,
             text_block("Latency over time (ms) - red marks = packet dropped")
                 .foreground(Color::rgb(0x8b, 0x94, 0x9e))
