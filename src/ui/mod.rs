@@ -19,6 +19,9 @@ use cards::card_element;
 use chart::{ChartProps, chart_view};
 use settings::{Editing, SettingsCtx, interval_to_index, settings_panel, window_to_index};
 
+/// UI refresh period. Also the chart's scroll granularity.
+const REFRESH_MS: u64 = 500;
+
 struct CardInfo {
     name: String,
     ip: String,
@@ -26,6 +29,50 @@ struct CardInfo {
     current: Option<u32>,
     loss: u32,
     measured: usize,
+}
+
+/// Live ping-pacing state, read from the monitor for display.
+struct Pace {
+    auto: bool,
+    manual_ms: u32,
+    current_ms: u32,
+    clean_needed: Option<u32>,
+}
+
+/// Render a ping interval for display. All the offered values are whole seconds.
+fn fmt_interval(ms: u32) -> String {
+    format!("{} s", (ms as f64 / 1000.0).round() as u32)
+}
+
+/// Short pace badge for the header, e.g. `Auto: every 1 s`.
+fn pace_label(auto_interval: bool, current_interval_ms: u32) -> String {
+    let every = fmt_interval(current_interval_ms);
+    if auto_interval {
+        format!("Auto: every {every}")
+    } else {
+        format!("Every {every}")
+    }
+}
+
+/// The longer explanation shown in the settings panel.
+fn pace_status(auto_interval: bool, current_interval_ms: u32, clean_needed: Option<u32>) -> String {
+    let every = fmt_interval(current_interval_ms);
+    if !auto_interval {
+        return format!(
+            "Pinging each target every {every}, one at a time spread across the interval."
+        );
+    }
+    match clean_needed {
+        Some(1) => {
+            format!("Auto: pinging every {every} after a drop - 1 more clean round to slow down.")
+        }
+        Some(n) => {
+            format!(
+                "Auto: pinging every {every} after a drop - {n} more clean rounds to slow down."
+            )
+        }
+        None => format!("Auto: pinging every {every} while healthy - any drop switches to 1 s."),
+    }
 }
 
 /// Render the whole app. `shared` is the monitor's live state; `init_window`
@@ -47,14 +94,15 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let gpu = Gpu::new(device, bump_recover);
 
     // Adopt the exe's embedded icon for the window caption + taskbar (once).
-    cx.use_effect((), || window_icon::set_app_window_icon());
+    cx.use_effect((), window_icon::set_app_window_icon);
 
-    // 1 Hz refresh: bump a counter so the view re-reads shared state.
+    // 2 Hz refresh: bump a counter so the view re-reads shared state. The chart
+    // keys its redraw off this, so it scrolls smoothly between samples.
     let (tick, bump_tick) = cx.use_reducer::<u64>(0);
     let timer = cx.use_ref::<Option<DispatcherTimer>>(None);
     cx.use_effect((), move || {
         if timer.borrow().is_none() {
-            match DispatcherTimer::new(Duration::from_millis(1000), move || {
+            match DispatcherTimer::new(Duration::from_millis(REFRESH_MS), move || {
                 bump_tick.call(|n| n.wrapping_add(1))
             }) {
                 Ok(t) => timer.set(Some(t)),
@@ -64,15 +112,19 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     });
 
     let (network_info, set_network_info) = cx.use_async_state(Default::default());
-    cx.use_effect(tick / 60, move || {
+    cx.use_effect(tick / (60_000 / REFRESH_MS), move || {
         std::thread::spawn(move || set_network_info.call(crate::network_info::query()));
     });
 
     // Settings state mirrors the monitor's shared state. Window also drives the
     // chart/cards time span.
     let (settings_open, set_settings_open) = cx.use_state(false);
+    let (init_auto, init_interval_ms) = {
+        let st = shared.lock().unwrap();
+        (st.auto_interval, st.interval_ms)
+    };
     let (interval_idx, set_interval_idx) =
-        cx.use_state(interval_to_index(shared.lock().unwrap().interval_ms));
+        cx.use_state(interval_to_index(init_auto, init_interval_ms));
     let (window_idx, set_window_idx) = cx.use_state(window_to_index(init_window));
     let (alert_threshold, set_alert_threshold) =
         cx.use_state(shared.lock().unwrap().packet_loss_alert_threshold);
@@ -86,10 +138,9 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let window_mins = WINDOW_MINS[window_idx.clamp(0, WINDOW_MINS.len() as i32 - 1) as usize];
 
     // Snapshot the state needed to render.
-    let (cards_info, revision, worst_loss) = {
+    let (cards_info, worst_loss, pace) = {
         let st = shared.lock().unwrap();
         let cutoff = now_ms() - window_mins * 60_000;
-        let last = st.history.samples.last();
         let mut worst = 0u32;
         let infos: Vec<CardInfo> = st
             .targets
@@ -100,7 +151,15 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                 // Samples from before it was added simply have no data.
                 let (measured, loss) = crate::monitor::target_loss(&st.history, &t.name, cutoff);
                 worst = worst.max(loss);
-                let current = last.and_then(|s| s.v.get(&t.name).copied().flatten());
+                // Targets are pinged round-robin, so the newest sample usually
+                // belongs to a different one — walk back to this target's own.
+                let current = st
+                    .history
+                    .samples
+                    .iter()
+                    .rev()
+                    .find_map(|s| s.v.get(&t.name).copied())
+                    .flatten();
                 CardInfo {
                     name: t.name.clone(),
                     ip: t.ip.clone(),
@@ -111,7 +170,13 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                 }
             })
             .collect();
-        (infos, st.revision, worst)
+        let pace = Pace {
+            auto: st.auto_interval,
+            manual_ms: st.interval_ms,
+            current_ms: st.current_interval_ms,
+            clean_needed: st.auto_clean_needed,
+        };
+        (infos, worst, pace)
     };
 
     let (status_text, status_color) = if worst_loss == 0 {
@@ -138,6 +203,8 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         hstack((
             text_block("Network Monitor").font_size(18.0).bold(),
             text_block(status_text).foreground(status_color),
+            text_block(pace_label(pace.auto, pace.current_ms))
+                .foreground(Color::rgb(0x8b, 0x94, 0x9e)),
         ))
         .spacing(16.0)
         .grid_column(0),
@@ -189,7 +256,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         chart_view,
         ChartProps {
             shared: shared.clone(),
-            revision,
+            frame: tick,
             window_mins,
             width: chart_w.round() as i32,
             height: chart_h.round() as i32,
@@ -229,7 +296,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                     c.current,
                     c.loss,
                     c.measured,
-                    revision,
+                    tick,
                     window_mins,
                     card_w,
                 )
@@ -254,6 +321,8 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         settings_panel(SettingsCtx {
             shared: shared.clone(),
             interval_idx,
+            interval_ms: pace.manual_ms,
+            auto_status: pace_status(pace.auto, pace.current_ms, pace.clean_needed),
             window_idx,
             alert_threshold,
             targets: edit_targets,
@@ -273,7 +342,5 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         Element::Empty
     };
 
-    grid((dashboard, overlay))
-        .provide(&gpu_context(), Some(gpu))
-        .into()
+    grid((dashboard, overlay)).provide(&gpu_context(), Some(gpu))
 }

@@ -39,7 +39,7 @@ pub fn card_element(
     current: Option<u32>,
     loss_pct: u32,
     sample_count: usize,
-    revision: u64,
+    frame: u64,
     window_mins: i64,
     card_w: f64,
 ) -> Element {
@@ -54,7 +54,7 @@ pub fn card_element(
         SparkProps {
             shared: shared.clone(),
             index,
-            revision,
+            frame,
             window_mins,
             width: spark_w,
         },
@@ -86,7 +86,7 @@ pub fn card_element(
 pub struct SparkProps {
     pub shared: Shared,
     pub index: usize,
-    pub revision: u64,
+    pub frame: u64,
     pub window_mins: i64,
     pub width: i32,
 }
@@ -94,7 +94,7 @@ pub struct SparkProps {
 impl PartialEq for SparkProps {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index
-            && self.revision == other.revision
+            && self.frame == other.frame
             && self.window_mins == other.window_mins
             && self.width == other.width
     }
@@ -111,7 +111,7 @@ fn spark_view(props: &SparkProps, cx: &mut RenderCx) -> Element {
     let gpu_effect = gpu.clone();
     let surface_effect = surface.clone();
     cx.use_effect(
-        (device.clone(), props.revision, props.window_mins, w),
+        (device.clone(), props.frame, props.window_mins, w),
         move || match dev.as_ref() {
             Some(dev) => match build_spark(dev, &props, w) {
                 Ok(Some(sis)) => surface_effect.set(Some(sis)),
@@ -140,17 +140,21 @@ fn build_spark(
     props: &SparkProps,
     spark_w: i32,
 ) -> Result<Option<CanvasImageSource>> {
-    let vals: Vec<Option<Option<u32>>> = {
+    // Only this target's own samples: targets are pinged round-robin, so most
+    // samples in the window belong to a different one. Timestamps are kept so
+    // the sparkline scrolls across a fixed window instead of stretching to fit.
+    let t_end = now_ms();
+    let t_start = t_end - props.window_mins * 60_000;
+    let vals: Vec<(i64, Option<u32>)> = {
         let st = props.shared.lock().unwrap();
         let name = st.targets.get(props.index).map(|t| t.name.clone());
-        let cutoff = now_ms() - props.window_mins * 60_000;
         match name {
             Some(name) => st
                 .history
                 .samples
                 .iter()
-                .filter(|s| s.t >= cutoff)
-                .map(|s| s.v.get(&name).copied())
+                .filter(|s| s.t >= t_start)
+                .filter_map(|s| s.v.get(&name).map(|v| (s.t, *v)))
                 .collect(),
             None => Vec::new(),
         }
@@ -171,39 +175,32 @@ fn build_spark(
                 let (w, h) = (spark_w as f32, SPARK_H as f32);
                 let max = vals
                     .iter()
-                    .filter_map(|v| v.flatten())
+                    .filter_map(|(_, v)| *v)
                     .max()
                     .unwrap_or(0)
                     .max(50) as f32;
-                let n = vals.len();
                 let line = session.create_solid_brush(d2d_color(r, g, b, 1.0))?;
                 let drop = session.create_solid_brush(d2d_color(0xf8, 0x51, 0x49, 0.5))?;
 
-                let x_at = |i: usize| -> f32 {
-                    if n <= 1 {
-                        0.0
-                    } else {
-                        (i as f32 / (n - 1) as f32) * w
-                    }
-                };
+                let span = (t_end - t_start).max(1) as f32;
+                let x_at = |t: i64| -> f32 { ((t - t_start) as f32 / span) * w };
                 let mut prev: Option<Vector2> = None;
-                for (i, v) in vals.iter().enumerate() {
+                for (t, v) in vals.iter() {
                     match v {
-                        Some(Some(v)) => {
+                        Some(v) => {
                             let y = h - (*v as f32 / max) * (h - 4.0) - 2.0;
-                            let pt = Vector2 { x: x_at(i), y };
+                            let pt = Vector2 { x: x_at(*t), y };
                             if let Some(p0) = prev {
                                 session.draw_line(p0, pt, &line, 1.5);
                             }
                             prev = Some(pt);
                         }
-                        Some(None) => {
-                            let x = x_at(i);
+                        None => {
+                            let x = x_at(*t);
                             let rect = Rect::new(x - 1.0, 0.0, x + 1.0, h);
                             session.fill_rect(&rect, &drop);
                             prev = None;
                         }
-                        None => prev = None,
                     }
                 }
                 Ok(())

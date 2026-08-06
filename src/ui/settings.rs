@@ -11,7 +11,7 @@ use crate::monitor::{self, Shared};
 use crate::notification;
 
 pub const INTERVAL_MS: [u32; 6] = [1000, 2000, 5000, 10000, 30000, 60000];
-const INTERVAL_LABELS: [&str; 6] = ["1 s", "2 s", "5 s", "10 s", "30 s", "60 s"];
+const INTERVAL_LABELS: [&str; 7] = ["Auto", "1 s", "2 s", "5 s", "10 s", "30 s", "60 s"];
 const WINDOW_LABELS: [&str; 7] = [
     "1 min", "5 min", "10 min", "30 min", "1 hour", "3 hours", "6 hours",
 ];
@@ -28,8 +28,25 @@ pub enum Editing {
     Row(usize),
 }
 
-pub fn interval_to_index(ms: u32) -> i32 {
-    INTERVAL_MS.iter().position(|&x| x == ms).unwrap_or(0) as i32
+/// Index 0 is "Auto"; the fixed intervals follow in `INTERVAL_MS` order.
+pub fn interval_to_index(auto_interval: bool, ms: u32) -> i32 {
+    if auto_interval {
+        return 0;
+    }
+    INTERVAL_MS
+        .iter()
+        .position(|&x| x == ms)
+        .map_or(1, |i| i as i32 + 1)
+}
+
+/// Decode a combo selection into `(auto, interval_ms)`. Picking "Auto" keeps
+/// the previous fixed interval so switching back restores the user's choice.
+fn index_to_interval(index: i32, previous_ms: u32) -> (bool, u32) {
+    if index <= 0 {
+        return (true, previous_ms);
+    }
+    let slot = (index as usize - 1).min(INTERVAL_MS.len() - 1);
+    (false, clamp_interval(INTERVAL_MS[slot]))
 }
 
 pub fn window_to_index(mins: i64) -> i32 {
@@ -40,6 +57,10 @@ pub fn window_to_index(mins: i64) -> i32 {
 pub struct SettingsCtx {
     pub shared: Shared,
     pub interval_idx: i32,
+    /// The fixed interval currently stored, kept so "Auto" can restore it.
+    pub interval_ms: u32,
+    /// What auto mode is doing right now, for the explanatory line.
+    pub auto_status: String,
     pub window_idx: i32,
     pub alert_threshold: u32,
     pub targets: Vec<Target>,
@@ -58,11 +79,11 @@ pub struct SettingsCtx {
 
 /// Build the settings overlay panel.
 pub fn settings_panel(ctx: SettingsCtx) -> Element {
-    let interval_ms = clamp_interval(INTERVAL_MS[ctx.interval_idx.clamp(0, 5) as usize]);
+    let (auto_interval, interval_ms) = index_to_interval(ctx.interval_idx, ctx.interval_ms);
     let window_mins = WINDOW_MINS[ctx.window_idx.clamp(0, WINDOW_MINS.len() as i32 - 1) as usize];
 
     let content: Element = if matches!(ctx.editing, Editing::Closed) {
-        list_view(&ctx, interval_ms, window_mins)
+        list_view(&ctx, auto_interval, interval_ms, window_mins)
     } else {
         component(
             edit_form,
@@ -70,6 +91,7 @@ pub fn settings_panel(ctx: SettingsCtx) -> Element {
                 shared: ctx.shared.clone(),
                 editing: ctx.editing.clone(),
                 targets: ctx.targets.clone(),
+                auto_interval,
                 interval_ms,
                 window_mins,
                 alert_threshold: ctx.alert_threshold,
@@ -91,7 +113,12 @@ pub fn settings_panel(ctx: SettingsCtx) -> Element {
 }
 
 /// The default panel view: monitoring controls, clear-data, and the target list.
-fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
+fn list_view(
+    ctx: &SettingsCtx,
+    auto_interval: bool,
+    interval_ms: u32,
+    window_mins: i64,
+) -> Element {
     let alert_threshold = clamp_packet_loss_alert_threshold(ctx.alert_threshold);
     let interval_combo = ComboBox::new(INTERVAL_LABELS)
         .header("Ping every")
@@ -102,9 +129,18 @@ fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
             let set_interval_idx = ctx.set_interval_idx.clone();
             move |i: i32| {
                 if i >= 0 {
-                    let ms = clamp_interval(INTERVAL_MS[i.clamp(0, 5) as usize]);
-                    shared.lock().unwrap().interval_ms = ms;
-                    config::save_settings(ms, window_mins, alert_threshold, &targets);
+                    let (auto, ms) = {
+                        let mut st = shared.lock().unwrap();
+                        let (auto, ms) = index_to_interval(i, st.interval_ms);
+                        st.auto_interval = auto;
+                        st.interval_ms = ms;
+                        if !auto {
+                            st.current_interval_ms = ms;
+                            st.auto_clean_needed = None;
+                        }
+                        (auto, ms)
+                    };
+                    config::save_settings(auto, ms, window_mins, alert_threshold, &targets);
                     set_interval_idx.call(i);
                 }
             }
@@ -121,7 +157,13 @@ fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
                 if i >= 0 {
                     let mins = WINDOW_MINS[i.clamp(0, WINDOW_MINS.len() as i32 - 1) as usize];
                     shared.lock().unwrap().window_mins = mins;
-                    config::save_settings(interval_ms, mins, alert_threshold, &targets);
+                    config::save_settings(
+                        auto_interval,
+                        interval_ms,
+                        mins,
+                        alert_threshold,
+                        &targets,
+                    );
                     set_window_idx.call(i);
                 }
             }
@@ -139,7 +181,13 @@ fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
                     let threshold =
                         clamp_packet_loss_alert_threshold(value.round().clamp(0.0, 100.0) as u32);
                     shared.lock().unwrap().packet_loss_alert_threshold = threshold;
-                    config::save_settings(interval_ms, window_mins, threshold, &targets);
+                    config::save_settings(
+                        auto_interval,
+                        interval_ms,
+                        window_mins,
+                        threshold,
+                        &targets,
+                    );
                     set_alert_threshold.call(threshold);
                 }
             }
@@ -163,7 +211,18 @@ fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
         .targets
         .iter()
         .enumerate()
-        .map(|(r, t)| target_row(ctx, r, t, count, interval_ms, window_mins, alert_threshold))
+        .map(|(r, t)| {
+            target_row(
+                ctx,
+                r,
+                t,
+                count,
+                auto_interval,
+                interval_ms,
+                window_mins,
+                alert_threshold,
+            )
+        })
         .collect();
 
     let add_button = button("Add target").icon(Symbol::Add).on_click({
@@ -185,6 +244,9 @@ fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
         header,
         text_block("Monitoring").font_size(14.0).bold(),
         hstack((interval_combo, window_combo, threshold_box)).spacing(16.0),
+        text_block(ctx.auto_status.clone())
+            .foreground(MUTED)
+            .font_size(12.0),
         text_block(
             "Alerts start after 10 samples and fire once per incident until the target recovers.",
         )
@@ -210,11 +272,13 @@ fn list_view(ctx: &SettingsCtx, interval_ms: u32, window_mins: i64) -> Element {
 }
 
 /// One read-only target row with edit / reorder / delete actions.
+#[allow(clippy::too_many_arguments)]
 fn target_row(
     ctx: &SettingsCtx,
     r: usize,
     target: &Target,
     count: usize,
+    auto_interval: bool,
     interval_ms: u32,
     window_mins: i64,
     alert_threshold: u32,
@@ -225,7 +289,13 @@ fn target_row(
         let set_targets = ctx.set_targets.clone();
         move |new: Vec<Target>| {
             shared.lock().unwrap().targets = new.clone();
-            config::save_settings(interval_ms, window_mins, alert_threshold, &new);
+            config::save_settings(
+                auto_interval,
+                interval_ms,
+                window_mins,
+                alert_threshold,
+                &new,
+            );
             set_targets.call(new);
         }
     };
@@ -295,6 +365,7 @@ struct FormProps {
     shared: Shared,
     editing: Editing,
     targets: Vec<Target>,
+    auto_interval: bool,
     interval_ms: u32,
     window_mins: i64,
     alert_threshold: u32,
@@ -308,6 +379,7 @@ impl PartialEq for FormProps {
     fn eq(&self, o: &Self) -> bool {
         self.editing == o.editing
             && self.targets == o.targets
+            && self.auto_interval == o.auto_interval
             && self.interval_ms == o.interval_ms
             && self.window_mins == o.window_mins
             && self.alert_threshold == o.alert_threshold
@@ -368,6 +440,7 @@ fn edit_form(props: &FormProps, cx: &mut RenderCx) -> Element {
             }
             props.shared.lock().unwrap().targets = new.clone();
             config::save_settings(
+                props.auto_interval,
                 props.interval_ms,
                 props.window_mins,
                 props.alert_threshold,

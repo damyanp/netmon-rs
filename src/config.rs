@@ -34,6 +34,10 @@ impl Target {
 pub const WINDOW_MINS: [i64; 7] = [1, 5, 10, 30, 60, 180, 360];
 
 pub struct Config {
+    /// When set, the monitor picks the interval itself: slow while everything
+    /// is healthy, fast right after a drop. `interval_ms` is then only the
+    /// manual value to fall back to if auto is turned off again.
+    pub auto_interval: bool,
     pub interval_ms: u32,
     pub window_mins: i64,
     pub packet_loss_alert_threshold: u32,
@@ -47,6 +51,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            auto_interval: true,
             interval_ms: 1000,
             window_mins: 10,
             packet_loss_alert_threshold: 15,
@@ -70,12 +75,16 @@ fn default_targets() -> Vec<Target> {
     ]
 }
 
-/// On-disk settings schema (v3). Fields default individually so older files
-/// (`{"intervalMs":N}`) still parses and migrates cleanly.
+/// On-disk settings schema (v4). Fields default individually so older files
+/// (`{"intervalMs":N}`) still parses and migrates cleanly. `autoInterval`
+/// defaults to `false` so upgrading users keep the fixed interval they chose;
+/// only fresh installs get auto (via `Config::default`).
 #[derive(Serialize, Deserialize)]
 struct Settings {
     #[serde(default = "default_version")]
     version: u32,
+    #[serde(rename = "autoInterval", default)]
+    auto_interval: bool,
     #[serde(rename = "intervalMs", default = "default_interval")]
     interval_ms: u32,
     #[serde(rename = "windowMins", default = "default_window")]
@@ -90,7 +99,7 @@ struct Settings {
 }
 
 fn default_version() -> u32 {
-    3
+    4
 }
 fn default_interval() -> u32 {
     1000
@@ -112,6 +121,7 @@ impl Config {
             .and_then(|t| serde_json::from_str::<Settings>(&t).ok())
         {
             Some(s) => {
+                cfg.auto_interval = s.auto_interval;
                 cfg.interval_ms = clamp_interval(s.interval_ms);
                 cfg.window_mins = clamp_window(s.window_mins);
                 cfg.packet_loss_alert_threshold =
@@ -123,6 +133,7 @@ impl Config {
             None => {
                 // First run (or an unreadable file): persist the seeded defaults.
                 save_settings(
+                    cfg.auto_interval,
                     cfg.interval_ms,
                     cfg.window_mins,
                     cfg.packet_loss_alert_threshold,
@@ -154,13 +165,15 @@ pub fn clamp_packet_loss_alert_threshold(percent: u32) -> u32 {
 
 /// Persist all settings to `settings.json`.
 pub fn save_settings(
+    auto_interval: bool,
     interval_ms: u32,
     window_mins: i64,
     packet_loss_alert_threshold: u32,
     targets: &[Target],
 ) {
     let settings = Settings {
-        version: 3,
+        version: 4,
+        auto_interval,
         interval_ms,
         window_mins,
         packet_loss_alert_threshold,

@@ -13,9 +13,19 @@ Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs), using
   sparkline of recent samples.
 - **Device network details** — active IPv4 addresses, subnet prefixes, gateways,
   DHCP servers, and current lease times.
+- **Adaptive ping interval** — the default **Auto** mode pings every 10 s while
+  everything is healthy, snaps to 1 s the instant any target drops a packet, then
+  backs off through 2 s and 5 s after each run of ten clean rounds. The header
+  shows the current pace; a fixed interval can still be chosen instead.
+- **Staggered pings** — targets are pinged one at a time, round-robin, spread
+  evenly across the interval rather than all at once.
+- **Time-weighted packet loss** — loss % weights each sample by the time it
+  stands for, so an outage sampled at 1 s doesn't outweigh the healthy stretches
+  sampled at 10 s around it.
 - **Latency chart** — all targets over a configurable time window, with red
-  markers where pings were dropped. Samples from before a target existed show as
-  gaps, not loss.
+  markers where pings were dropped. The x axis always spans the full window and
+  scrolls twice a second, so data slides left instead of stretching to fit.
+  Samples from before a target existed show as gaps, not loss.
 - **Settings pane** — adjust the ping interval and display window, clear history,
   configure packet-loss notifications, test Windows notification delivery, and
   add/edit/reorder/remove targets.

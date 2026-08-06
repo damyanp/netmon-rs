@@ -24,7 +24,7 @@ pub fn set_app_window_icon() {
 
         let load = |cx: i32, cy: i32| -> Option<HICON> {
             let h = LoadImageW(
-                Some(hinst.into()),
+                Some(hinst),
                 PCWSTR(APP_ICON_ID as usize as *const u16),
                 IMAGE_ICON,
                 cx,

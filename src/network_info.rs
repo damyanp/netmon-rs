@@ -15,17 +15,12 @@ use windows::timezoneapi::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime
 use windows::winerror::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
 use windows::ws2::{AF_INET, SOCKADDR_IN, SOCKET_ADDRESS};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub enum DeviceNetworkInfo {
+    #[default]
     Loading,
     Loaded(Vec<AdapterInfo>),
     Error(String),
-}
-
-impl Default for DeviceNetworkInfo {
-    fn default() -> Self {
-        Self::Loading
-    }
 }
 
 impl DeviceNetworkInfo {
