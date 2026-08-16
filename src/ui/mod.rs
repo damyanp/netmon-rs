@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use windows_reactor::*;
 
+use crate::bandwidth::format_bps;
 use crate::config::{Target, WINDOW_MINS};
 use crate::device::{Device, Gpu, gpu_context};
 use crate::monitor::{Shared, now_ms};
@@ -138,7 +139,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let window_mins = WINDOW_MINS[window_idx.clamp(0, WINDOW_MINS.len() as i32 - 1) as usize];
 
     // Snapshot the state needed to render.
-    let (cards_info, worst_loss, pace) = {
+    let (cards_info, worst_loss, pace, bandwidth) = {
         let st = shared.lock().unwrap();
         let cutoff = now_ms() - window_mins * 60_000;
         let mut worst = 0u32;
@@ -176,7 +177,16 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             current_ms: st.current_interval_ms,
             clean_needed: st.auto_clean_needed,
         };
-        (infos, worst, pace)
+        (infos, worst, pace, st.bandwidth.latest())
+    };
+
+    let bandwidth_label = match bandwidth {
+        Some(b) => format!(
+            "\u{2193} {}   \u{2191} {}",
+            format_bps(b.rx_bps),
+            format_bps(b.tx_bps)
+        ),
+        None => "\u{2193} -   \u{2191} -".to_string(),
     };
 
     let (status_text, status_color) = if worst_loss == 0 {
@@ -234,6 +244,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         text_block(network_info.connection_details(now_ms()))
             .foreground(Color::rgb(0x8b, 0x94, 0x9e))
             .font_size(11.0),
+        text_block(bandwidth_label.clone()).font_size(13.0),
     ))
     .spacing(4.0)
     .padding(Thickness::uniform(16.0))
@@ -263,6 +274,17 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         },
     );
 
+    let bandwidth_legend = || {
+        [(chart::RX_COLOR, "Download"), (chart::TX_COLOR, "Upload")].map(|((r, g, b), label)| {
+            hstack((
+                text_block("\u{25A0}").foreground(Color::rgb(r, g, b)),
+                text_block(label).foreground(Color::rgb(0x8b, 0x94, 0x9e)),
+            ))
+            .spacing(6.0)
+            .into()
+        })
+    };
+
     let dashboard = if compact {
         let legend = hstack(
             cards_info
@@ -277,6 +299,8 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
                     .spacing(6.0)
                     .into()
                 })
+                .chain(bandwidth_legend())
+                .chain(std::iter::once(text_block(bandwidth_label).into()))
                 .collect::<Vec<Element>>(),
         )
         .spacing(16.0);
@@ -307,9 +331,17 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
         vstack((
             header,
             cards_row,
-            text_block("Latency over time (ms) - red marks = packet dropped")
-                .foreground(Color::rgb(0x8b, 0x94, 0x9e))
-                .font_size(14.0),
+            hstack(
+                std::iter::once(
+                    text_block("Latency over time (ms) - red marks = packet dropped")
+                        .foreground(Color::rgb(0x8b, 0x94, 0x9e))
+                        .font_size(14.0)
+                        .into(),
+                )
+                .chain(bandwidth_legend())
+                .collect::<Vec<Element>>(),
+            )
+            .spacing(16.0),
             chart,
         ))
         .spacing(16.0)

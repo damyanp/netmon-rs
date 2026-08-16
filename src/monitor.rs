@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::bandwidth::BandwidthHistory;
 use crate::config::{self, Config, Target};
 use crate::history::{History, Sample};
 use crate::notification;
@@ -75,6 +76,8 @@ impl AutoInterval {
 /// State shared between the worker thread and the UI thread.
 pub struct AppState {
     pub history: History,
+    /// Interface throughput, sampled independently of the pings.
+    pub bandwidth: BandwidthHistory,
     /// Whether the monitor picks its own interval (see [`AutoInterval`]).
     pub auto_interval: bool,
     /// The manual interval, used when `auto_interval` is off.
@@ -108,6 +111,7 @@ pub fn init_shared(cfg: &Config) -> Shared {
     let _ = std::fs::remove_file(config::history_path());
     Arc::new(Mutex::new(AppState {
         history: History::default(),
+        bandwidth: BandwidthHistory::default(),
         auto_interval: cfg.auto_interval,
         interval_ms: cfg.interval_ms,
         current_interval_ms: if cfg.auto_interval {
@@ -129,6 +133,7 @@ pub fn clear_history(shared: &Shared) {
     {
         let mut st = shared.lock().unwrap();
         st.history.samples.clear();
+        st.bandwidth.samples.clear();
         st.revision = st.revision.wrapping_add(1);
     }
     let _ = std::fs::remove_file(config::history_path());

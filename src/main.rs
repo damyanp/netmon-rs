@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod bandwidth;
 mod config;
 mod device;
 mod history;
@@ -24,6 +25,11 @@ fn main() -> Result<()> {
     let cfg = config::Config::load();
     let init_window = cfg.window_mins;
     let shared = monitor::init_shared(&cfg);
+    bandwidth::spawn(
+        shared.clone(),
+        cfg.history_max_age_ms,
+        cfg.history_max_samples,
+    );
     monitor::spawn(shared.clone(), cfg);
 
     App::new()

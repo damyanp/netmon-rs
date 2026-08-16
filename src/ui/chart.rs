@@ -5,10 +5,14 @@
 use std::collections::HashSet;
 
 use windows::core::*;
-use windows_canvas::{CanvasImageSource, ColorF, DrawingSession, Rect, TextAlignment, TextFormat};
+use windows_canvas::{
+    CanvasImageSource, ColorF, DrawingSession, GpuDevice, PathBuilder, Rect, TextAlignment,
+    TextFormat,
+};
 use windows_numerics::Vector2;
 use windows_reactor::*;
 
+use crate::bandwidth::format_bps;
 use crate::device::{Gpu, gpu_context};
 use crate::monitor::{Shared, now_ms};
 
@@ -24,6 +28,19 @@ pub const COLORS: [(u8, u8, u8); 5] = [
     (0xf7, 0x78, 0xba),
     (0xa3, 0x71, 0xf7),
 ];
+
+/// Bandwidth area colors, deliberately outside [`COLORS`] so the backdrop can't
+/// be mistaken for a latency series.
+pub const RX_COLOR: (u8, u8, u8) = (0x2d, 0xb4, 0xa5);
+pub const TX_COLOR: (u8, u8, u8) = (0xd8, 0x7c, 0x2f);
+
+/// Opacity of the filled bandwidth areas. Low enough that the ping lines and
+/// gridlines stay legible on top.
+const AREA_ALPHA: f32 = 0.28;
+
+/// Floor on the bandwidth axis (100 kb/s), so an idle link doesn't amplify a few
+/// stray keep-alive packets into a full-height plot.
+const MIN_BANDWIDTH_SCALE: f64 = 1e5;
 
 fn color(r: u8, g: u8, b: u8) -> ColorF {
     ColorF::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
@@ -96,6 +113,8 @@ pub fn chart_view(props: &ChartProps, cx: &mut RenderCx) -> Element {
 struct ChartData {
     names: Vec<String>,
     samples: Vec<(i64, Vec<Option<Option<u32>>>)>,
+    /// `(t, rx bits/s, tx bits/s)`, sampled on its own steady tick.
+    bandwidth: Vec<(i64, f64, f64)>,
     t_start: i64,
     t_end: i64,
 }
@@ -133,9 +152,19 @@ fn snapshot(props: &ChartProps) -> ChartData {
         })
         .collect();
 
+    // One reading before the window is carried in so the area meets the left
+    // edge instead of starting a tick late.
+    let bw_all = &st.bandwidth.samples;
+    let bw_first = bw_all.partition_point(|s| s.t < t_start).saturating_sub(1);
+    let bandwidth = bw_all[bw_first..]
+        .iter()
+        .map(|s| (s.t, s.rx_bps, s.tx_bps))
+        .collect();
+
     ChartData {
         names,
         samples,
+        bandwidth,
         t_start,
         t_end,
     }
@@ -159,7 +188,7 @@ fn build_surface(
             1.0,
         ),
         |session| {
-            draw_result = draw_chart(session, &data, w as f32, h as f32);
+            draw_result = draw_chart(session, device.gpu_device(), &data, w as f32, h as f32);
         },
     )?;
     draw_result?;
@@ -171,13 +200,21 @@ fn build_surface(
     }
 }
 
-fn draw_chart(session: &DrawingSession<'_>, data: &ChartData, w: f32, h: f32) -> Result<()> {
-    let (pad_l, pad_r, pad_t, pad_b) = (44.0_f32, 12.0_f32, 12.0_f32, 24.0_f32);
+fn draw_chart(
+    session: &DrawingSession<'_>,
+    device: &GpuDevice,
+    data: &ChartData,
+    w: f32,
+    h: f32,
+) -> Result<()> {
+    // The right margin carries the bandwidth scale, the left one latency.
+    let (pad_l, pad_r, pad_t, pad_b) = (44.0_f32, 66.0_f32, 12.0_f32, 24.0_f32);
     let plot_w = w - pad_l - pad_r;
     let plot_h = h - pad_t - pad_b;
 
     let label_fmt_trailing =
         TextFormat::new("Segoe UI", 11.0)?.with_alignment(TextAlignment::Trailing);
+    let label_fmt_leading = TextFormat::new("Segoe UI", 11.0)?;
     let label_fmt_center = TextFormat::new("Segoe UI", 11.0)?.with_alignment(TextAlignment::Center);
 
     let grid_brush = session.create_solid_brush(ColorF::new(1.0, 1.0, 1.0, 0.06))?;
@@ -194,7 +231,18 @@ fn draw_chart(session: &DrawingSession<'_>, data: &ChartData, w: f32, h: f32) ->
         .max(50) as f32;
     let max_y = max_val * 1.1;
 
-    // Horizontal gridlines + y labels.
+    // The x axis is pinned to the window, not to the samples we happen to have,
+    // so the plot scrolls left at a steady rate instead of stretching to fit.
+    let window_ms = (data.t_end - data.t_start).max(1);
+    let span = window_ms as f32;
+    let x_at = |t: i64| -> f32 { pad_l + ((t - data.t_start) as f32 / span) * plot_w };
+    let y_at = |v: u32| -> f32 { pad_t + plot_h - (v as f32 / max_y) * plot_h };
+
+    // Bandwidth goes down first: it is context for the latency lines, not a
+    // series in its own right, so everything else draws on top of it.
+    let max_bps = draw_bandwidth(session, device, data, &x_at, pad_t, plot_h)?;
+
+    // Horizontal gridlines, with latency on the left and bandwidth on the right.
     for g in 0..=4 {
         let y = pad_t + (g as f32 / 4.0) * plot_h;
         session.draw_line(
@@ -203,17 +251,19 @@ fn draw_chart(session: &DrawingSession<'_>, data: &ChartData, w: f32, h: f32) ->
             &grid_brush,
             1.0,
         );
-        let val = (max_y * (1.0 - g as f32 / 4.0)).round() as i32;
+        let fraction = 1.0 - g as f32 / 4.0;
+        let val = (max_y * fraction).round() as i32;
         let rect = Rect::new(0.0, y - 8.0, pad_l - 6.0, y + 8.0);
         session.draw_text(&format!("{val}ms"), &label_fmt_trailing, &rect, &text_brush);
-    }
 
-    // The x axis is pinned to the window, not to the samples we happen to have,
-    // so the plot scrolls left at a steady rate instead of stretching to fit.
-    let window_ms = (data.t_end - data.t_start).max(1);
-    let span = window_ms as f32;
-    let x_at = |t: i64| -> f32 { pad_l + ((t - data.t_start) as f32 / span) * plot_w };
-    let y_at = |v: u32| -> f32 { pad_t + plot_h - (v as f32 / max_y) * plot_h };
+        let rect = Rect::new(w - pad_r + 6.0, y - 8.0, w, y + 8.0);
+        session.draw_text(
+            &format_bps(max_bps * fraction as f64),
+            &label_fmt_leading,
+            &rect,
+            &text_brush,
+        );
+    }
 
     // Drop markers: a faint vertical bar wherever a measured target dropped.
     // Samples that predate a target (no data) are left blank, not marked.
@@ -268,6 +318,88 @@ fn draw_chart(session: &DrawingSession<'_>, data: &ChartData, w: f32, h: f32) ->
     }
 
     Ok(())
+}
+
+/// Fill the download and upload areas behind everything else and return the
+/// bandwidth scale that was used (bits/s at the top of the plot), so the axis
+/// labels agree with what was drawn.
+fn draw_bandwidth(
+    session: &DrawingSession<'_>,
+    device: &GpuDevice,
+    data: &ChartData,
+    x_at: &impl Fn(i64) -> f32,
+    pad_t: f32,
+    plot_h: f32,
+) -> Result<f64> {
+    let peak = data
+        .bandwidth
+        .iter()
+        .map(|(_, rx, tx)| rx.max(*tx))
+        .fold(0.0_f64, f64::max);
+    // 10% headroom, matching the latency axis, so the peak isn't clipped by the
+    // top gridline.
+    let max_bps = (peak * 1.1).max(MIN_BANDWIDTH_SCALE);
+
+    let bottom = pad_t + plot_h;
+    let y_at = |v: f64| -> f32 { bottom - (v / max_bps).clamp(0.0, 1.0) as f32 * plot_h };
+    let min_x = x_at(data.t_start);
+
+    // Download sits behind upload: it is usually the larger of the two, so this
+    // keeps the smaller area readable.
+    type Pick = fn(&(i64, f64, f64)) -> f64;
+    for (pick, (r, g, b)) in [
+        ((|s: &(i64, f64, f64)| s.1) as Pick, RX_COLOR),
+        ((|s: &(i64, f64, f64)| s.2) as Pick, TX_COLOR),
+    ] {
+        let points: Vec<Vector2> = data
+            .bandwidth
+            .iter()
+            .map(|s| Vector2 {
+                x: x_at(s.0),
+                y: y_at(pick(s)),
+            })
+            .collect();
+        let Some(points) = clip_polyline_left(points, min_x) else {
+            continue;
+        };
+
+        let brush = session.create_solid_brush(ColorF::new(
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            AREA_ALPHA,
+        ))?;
+        let first_x = points[0].x;
+        let last_x = points[points.len() - 1].x;
+        let outline = std::iter::once(Vector2 {
+            x: first_x,
+            y: bottom,
+        })
+        .chain(points)
+        .chain(std::iter::once(Vector2 {
+            x: last_x,
+            y: bottom,
+        }));
+        let path = PathBuilder::new(device)?.polygon(outline)?;
+        session.fill_path(&path, &brush);
+    }
+
+    Ok(max_bps)
+}
+
+/// Drop the part of a polyline left of `min_x`, interpolating the point where it
+/// crosses the axis. Returns `None` if fewer than two points remain, which can't
+/// bound an area.
+fn clip_polyline_left(points: Vec<Vector2>, min_x: f32) -> Option<Vec<Vector2>> {
+    let first_inside = points.iter().position(|p| p.x >= min_x)?;
+    let mut clipped: Vec<Vector2> = Vec::with_capacity(points.len() - first_inside + 1);
+    if let Some(prev) = first_inside.checked_sub(1)
+        && let Some(entry) = clip_left(points[prev], points[first_inside], min_x)
+    {
+        clipped.push(entry);
+    }
+    clipped.extend_from_slice(&points[first_inside..]);
+    (clipped.len() >= 2).then_some(clipped)
 }
 
 /// Trim a segment that starts left of the plot area so it enters exactly at the
