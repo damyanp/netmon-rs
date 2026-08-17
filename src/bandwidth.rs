@@ -1,4 +1,4 @@
-//! Throughput sampling for the bandwidth area drawn behind the latency lines.
+//! Throughput sampling for the bandwidth bars drawn behind the latency lines.
 //!
 //! Reads the byte counters of whichever interface currently carries the default
 //! route (`GetBestInterface` + `GetIfEntry2`) on a fixed 1 s tick, and turns
@@ -15,9 +15,9 @@ use windows::winerror::NO_ERROR;
 
 use crate::monitor::{Shared, now_ms};
 
-/// How often the interface counters are read. Also the resolution of the area
+/// How often the interface counters are read. Also the width of one bar on the
 /// chart, so keep it well under the shortest display window (1 minute).
-const SAMPLE_MS: u64 = 1_000;
+pub const SAMPLE_MS: u64 = 1_000;
 
 /// One throughput reading, in bits per second in each direction.
 #[derive(Clone, Copy)]

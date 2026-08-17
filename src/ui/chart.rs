@@ -12,7 +12,7 @@ use windows_canvas::{
 use windows_numerics::Vector2;
 use windows_reactor::*;
 
-use crate::bandwidth::format_bps;
+use crate::bandwidth::{SAMPLE_MS, format_bps};
 use crate::device::{Gpu, gpu_context};
 use crate::monitor::{Shared, now_ms};
 
@@ -29,14 +29,14 @@ pub const COLORS: [(u8, u8, u8); 5] = [
     (0xa3, 0x71, 0xf7),
 ];
 
-/// Bandwidth area colors, deliberately outside [`COLORS`] so the backdrop can't
+/// Bandwidth bar colors, deliberately outside [`COLORS`] so the backdrop can't
 /// be mistaken for a latency series.
 pub const RX_COLOR: (u8, u8, u8) = (0x2d, 0xb4, 0xa5);
 pub const TX_COLOR: (u8, u8, u8) = (0xd8, 0x7c, 0x2f);
 
-/// Opacity of the filled bandwidth areas. Low enough that the ping lines and
+/// Opacity of the filled bandwidth bars. Low enough that the ping lines and
 /// gridlines stay legible on top.
-const AREA_ALPHA: f32 = 0.28;
+const BAR_ALPHA: f32 = 0.28;
 
 /// Floor on the bandwidth axis (100 kb/s), so an idle link doesn't amplify a few
 /// stray keep-alive packets into a full-height plot.
@@ -152,8 +152,8 @@ fn snapshot(props: &ChartProps) -> ChartData {
         })
         .collect();
 
-    // One reading before the window is carried in so the area meets the left
-    // edge instead of starting a tick late.
+    // One reading before the window is carried in so a bar straddling the left
+    // edge is still drawn (clipped) instead of missing.
     let bw_all = &st.bandwidth.samples;
     let bw_first = bw_all.partition_point(|s| s.t < t_start).saturating_sub(1);
     let bandwidth = bw_all[bw_first..]
@@ -320,9 +320,14 @@ fn draw_chart(
     Ok(())
 }
 
-/// Fill the download and upload areas behind everything else and return the
+/// Draw the download and upload bars behind everything else and return the
 /// bandwidth scale that was used (bits/s at the top of the plot), so the axis
 /// labels agree with what was drawn.
+///
+/// Bars rather than a line: each reading is a byte count accumulated over one
+/// whole sampling interval, so it is a value for a span of time, not a reading
+/// at an instant. Sloping between neighbours would imply intermediate rates
+/// that were never measured.
 fn draw_bandwidth(
     session: &DrawingSession<'_>,
     device: &GpuDevice,
@@ -344,62 +349,65 @@ fn draw_bandwidth(
     let y_at = |v: f64| -> f32 { bottom - (v / max_bps).clamp(0.0, 1.0) as f32 * plot_h };
     let min_x = x_at(data.t_start);
 
+    // A sample timestamped `t` covers the interval that ended at `t`, so its bar
+    // occupies the slot to the left of that point.
+    let slot_w = x_at(data.t_start + SAMPLE_MS as i64) - min_x;
+    // Separate the bars only once a gap would read as a gap. On the longer
+    // windows a slot is a fraction of a pixel, where the bars necessarily merge
+    // into a stepped silhouette.
+    let gap = if slot_w >= 5.0 {
+        (slot_w * 0.2).min(3.0)
+    } else {
+        0.0
+    };
+
     // Download sits behind upload: it is usually the larger of the two, so this
-    // keeps the smaller area readable.
+    // keeps the smaller set of bars readable. Each direction is one path with a
+    // figure per bar, filled in a single pass, so touching bars don't blend
+    // their translucent edges into seams.
     type Pick = fn(&(i64, f64, f64)) -> f64;
     for (pick, (r, g, b)) in [
         ((|s: &(i64, f64, f64)| s.1) as Pick, RX_COLOR),
         ((|s: &(i64, f64, f64)| s.2) as Pick, TX_COLOR),
     ] {
-        let points: Vec<Vector2> = data
-            .bandwidth
-            .iter()
-            .map(|s| Vector2 {
-                x: x_at(s.0),
-                y: y_at(pick(s)),
-            })
-            .collect();
-        let Some(points) = clip_polyline_left(points, min_x) else {
+        let mut builder = PathBuilder::new(device)?;
+        let mut bars = 0;
+        for sample in data.bandwidth.iter() {
+            let value = pick(sample);
+            if value <= 0.0 {
+                continue;
+            }
+            let right = x_at(sample.0) - gap * 0.5;
+            let left = (right - slot_w + gap).max(min_x);
+            let top = y_at(value);
+            if right <= left || top >= bottom {
+                continue;
+            }
+            builder = builder
+                .begin(Vector2 { x: left, y: bottom })
+                .line_to(Vector2 { x: left, y: top })
+                .line_to(Vector2 { x: right, y: top })
+                .line_to(Vector2 {
+                    x: right,
+                    y: bottom,
+                })
+                .close();
+            bars += 1;
+        }
+        if bars == 0 {
             continue;
-        };
+        }
 
         let brush = session.create_solid_brush(ColorF::new(
             r as f32 / 255.0,
             g as f32 / 255.0,
             b as f32 / 255.0,
-            AREA_ALPHA,
+            BAR_ALPHA,
         ))?;
-        let first_x = points[0].x;
-        let last_x = points[points.len() - 1].x;
-        let outline = std::iter::once(Vector2 {
-            x: first_x,
-            y: bottom,
-        })
-        .chain(points)
-        .chain(std::iter::once(Vector2 {
-            x: last_x,
-            y: bottom,
-        }));
-        let path = PathBuilder::new(device)?.polygon(outline)?;
-        session.fill_path(&path, &brush);
+        session.fill_path(&builder.build()?, &brush);
     }
 
     Ok(max_bps)
-}
-
-/// Drop the part of a polyline left of `min_x`, interpolating the point where it
-/// crosses the axis. Returns `None` if fewer than two points remain, which can't
-/// bound an area.
-fn clip_polyline_left(points: Vec<Vector2>, min_x: f32) -> Option<Vec<Vector2>> {
-    let first_inside = points.iter().position(|p| p.x >= min_x)?;
-    let mut clipped: Vec<Vector2> = Vec::with_capacity(points.len() - first_inside + 1);
-    if let Some(prev) = first_inside.checked_sub(1)
-        && let Some(entry) = clip_left(points[prev], points[first_inside], min_x)
-    {
-        clipped.push(entry);
-    }
-    clipped.extend_from_slice(&points[first_inside..]);
-    (clipped.len() >= 2).then_some(clipped)
 }
 
 /// Trim a segment that starts left of the plot area so it enters exactly at the
