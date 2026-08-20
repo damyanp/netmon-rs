@@ -54,6 +54,7 @@ pub struct ChartProps {
     pub shared: Shared,
     pub frame: u64,
     pub window_mins: i64,
+    pub stacked_bandwidth: bool,
     pub width: i32,
     pub height: i32,
 }
@@ -62,6 +63,7 @@ impl PartialEq for ChartProps {
     fn eq(&self, other: &Self) -> bool {
         self.frame == other.frame
             && self.window_mins == other.window_mins
+            && self.stacked_bandwidth == other.stacked_bandwidth
             && self.width == other.width
             && self.height == other.height
     }
@@ -79,7 +81,14 @@ pub fn chart_view(props: &ChartProps, cx: &mut RenderCx) -> Element {
     let gpu_effect = gpu.clone();
     let surface_effect = surface.clone();
     cx.use_effect(
-        (device.clone(), props.frame, props.window_mins, w, h),
+        (
+            device.clone(),
+            props.frame,
+            props.window_mins,
+            props.stacked_bandwidth,
+            w,
+            h,
+        ),
         move || match dev.as_ref() {
             Some(dev) => match build_surface(dev, &props, w, h) {
                 Ok(Some(sis)) => surface_effect.set(Some(sis)),
@@ -115,6 +124,7 @@ struct ChartData {
     samples: Vec<(i64, Vec<Option<Option<u32>>>)>,
     /// `(t, rx bits/s, tx bits/s)`, sampled on its own steady tick.
     bandwidth: Vec<(i64, f64, f64)>,
+    stacked_bandwidth: bool,
     t_start: i64,
     t_end: i64,
 }
@@ -165,6 +175,7 @@ fn snapshot(props: &ChartProps) -> ChartData {
         names,
         samples,
         bandwidth,
+        stacked_bandwidth: props.stacked_bandwidth,
         t_start,
         t_end,
     }
@@ -339,7 +350,13 @@ fn draw_bandwidth(
     let peak = data
         .bandwidth
         .iter()
-        .map(|(_, rx, tx)| rx.max(*tx))
+        .map(|(_, rx, tx)| {
+            if data.stacked_bandwidth {
+                rx + tx
+            } else {
+                rx.max(*tx)
+            }
+        })
         .fold(0.0_f64, f64::max);
     // 10% headroom, matching the latency axis, so the peak isn't clipped by the
     // top gridline.
@@ -361,35 +378,38 @@ fn draw_bandwidth(
         0.0
     };
 
-    // Download sits behind upload: it is usually the larger of the two, so this
-    // keeps the smaller set of bars readable. Each direction is one path with a
-    // figure per bar, filled in a single pass, so touching bars don't blend
-    // their translucent edges into seams.
-    type Pick = fn(&(i64, f64, f64)) -> f64;
-    for (pick, (r, g, b)) in [
-        ((|s: &(i64, f64, f64)| s.1) as Pick, RX_COLOR),
-        ((|s: &(i64, f64, f64)| s.2) as Pick, TX_COLOR),
-    ] {
+    // Each direction is one path, filled in a single pass, so touching bars
+    // don't blend their translucent edges into seams.
+    for (layer, (r, g, b)) in [RX_COLOR, TX_COLOR].into_iter().enumerate() {
         let mut builder = PathBuilder::new(device)?;
         let mut bars = 0;
         for sample in data.bandwidth.iter() {
-            let value = pick(sample);
-            if value <= 0.0 {
+            let (_, rx, tx) = *sample;
+            let (base, value) = match (data.stacked_bandwidth, layer) {
+                (_, 0) => (0.0, rx),
+                (true, _) => (rx, rx + tx),
+                (false, _) => (0.0, tx),
+            };
+            if value <= base {
                 continue;
             }
             let right = x_at(sample.0) - gap * 0.5;
             let left = (right - slot_w + gap).max(min_x);
             let top = y_at(value);
-            if right <= left || top >= bottom {
+            let bar_bottom = y_at(base);
+            if right <= left || top >= bar_bottom {
                 continue;
             }
             builder = builder
-                .begin(Vector2 { x: left, y: bottom })
+                .begin(Vector2 {
+                    x: left,
+                    y: bar_bottom,
+                })
                 .line_to(Vector2 { x: left, y: top })
                 .line_to(Vector2 { x: right, y: top })
                 .line_to(Vector2 {
                     x: right,
-                    y: bottom,
+                    y: bar_bottom,
                 })
                 .close();
             bars += 1;

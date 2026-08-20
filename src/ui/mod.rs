@@ -127,6 +127,8 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
     let (interval_idx, set_interval_idx) =
         cx.use_state(interval_to_index(init_auto, init_interval_ms));
     let (window_idx, set_window_idx) = cx.use_state(window_to_index(init_window));
+    let (stacked_bandwidth, set_stacked_bandwidth) =
+        cx.use_state(shared.lock().unwrap().stacked_bandwidth);
     let (alert_threshold, set_alert_threshold) =
         cx.use_state(shared.lock().unwrap().packet_loss_alert_threshold);
     let (notification_status, set_notification_status) = cx.use_state(String::new());
@@ -269,6 +271,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             shared: shared.clone(),
             frame: tick,
             window_mins,
+            stacked_bandwidth,
             width: chart_w.round() as i32,
             height: chart_h.round() as i32,
         },
@@ -356,6 +359,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             interval_ms: pace.manual_ms,
             auto_status: pace_status(pace.auto, pace.current_ms, pace.clean_needed),
             window_idx,
+            stacked_bandwidth,
             alert_threshold,
             targets: edit_targets,
             editing,
@@ -363,6 +367,7 @@ pub fn app(cx: &mut RenderCx, shared: Shared, init_window: i64) -> Element {
             set_open: set_settings_open,
             set_interval_idx,
             set_window_idx,
+            set_stacked_bandwidth,
             set_alert_threshold,
             set_targets,
             set_editing,

@@ -1,6 +1,7 @@
 //! App configuration and target list. On first run it seeds generic defaults
 //! (auto-detected gateway + a couple of internet hosts) and persists everything
-//! — ping interval, display window, and targets — to `settings.json`.
+//! — ping interval, display window, bandwidth presentation, and targets — to
+//! `settings.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -40,6 +41,7 @@ pub struct Config {
     pub auto_interval: bool,
     pub interval_ms: u32,
     pub window_mins: i64,
+    pub stacked_bandwidth: bool,
     pub packet_loss_alert_threshold: u32,
     pub timeout_ms: u32,
     pub history_max_age_ms: i64,
@@ -54,6 +56,7 @@ impl Default for Config {
             auto_interval: true,
             interval_ms: 1000,
             window_mins: 10,
+            stacked_bandwidth: true,
             packet_loss_alert_threshold: 15,
             timeout_ms: 1500,
             history_max_age_ms: 6 * 60 * 60 * 1000,
@@ -75,7 +78,7 @@ fn default_targets() -> Vec<Target> {
     ]
 }
 
-/// On-disk settings schema (v4). Fields default individually so older files
+/// On-disk settings schema (v5). Fields default individually so older files
 /// (`{"intervalMs":N}`) still parses and migrates cleanly. `autoInterval`
 /// defaults to `false` so upgrading users keep the fixed interval they chose;
 /// only fresh installs get auto (via `Config::default`).
@@ -89,6 +92,8 @@ struct Settings {
     interval_ms: u32,
     #[serde(rename = "windowMins", default = "default_window")]
     window_mins: i64,
+    #[serde(rename = "stackedBandwidth", default = "default_stacked_bandwidth")]
+    stacked_bandwidth: bool,
     #[serde(
         rename = "packetLossAlertThreshold",
         default = "default_packet_loss_alert_threshold"
@@ -99,13 +104,16 @@ struct Settings {
 }
 
 fn default_version() -> u32 {
-    4
+    5
 }
 fn default_interval() -> u32 {
     1000
 }
 fn default_window() -> i64 {
     10
+}
+fn default_stacked_bandwidth() -> bool {
+    true
 }
 fn default_packet_loss_alert_threshold() -> u32 {
     15
@@ -124,6 +132,7 @@ impl Config {
                 cfg.auto_interval = s.auto_interval;
                 cfg.interval_ms = clamp_interval(s.interval_ms);
                 cfg.window_mins = clamp_window(s.window_mins);
+                cfg.stacked_bandwidth = s.stacked_bandwidth;
                 cfg.packet_loss_alert_threshold =
                     clamp_packet_loss_alert_threshold(s.packet_loss_alert_threshold);
                 if !s.targets.is_empty() {
@@ -136,6 +145,7 @@ impl Config {
                     cfg.auto_interval,
                     cfg.interval_ms,
                     cfg.window_mins,
+                    cfg.stacked_bandwidth,
                     cfg.packet_loss_alert_threshold,
                     &cfg.targets,
                 );
@@ -168,14 +178,16 @@ pub fn save_settings(
     auto_interval: bool,
     interval_ms: u32,
     window_mins: i64,
+    stacked_bandwidth: bool,
     packet_loss_alert_threshold: u32,
     targets: &[Target],
 ) {
     let settings = Settings {
-        version: 4,
+        version: 5,
         auto_interval,
         interval_ms,
         window_mins,
+        stacked_bandwidth,
         packet_loss_alert_threshold,
         targets: targets.to_vec(),
     };
@@ -244,6 +256,16 @@ mod tests {
             settings.packet_loss_alert_threshold,
             default_packet_loss_alert_threshold()
         );
+        assert!(settings.stacked_bandwidth);
+    }
+
+    #[test]
+    fn overlaid_bandwidth_setting_is_preserved() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"version":5,"intervalMs":1000,"windowMins":10,"stackedBandwidth":false}"#,
+        )
+        .unwrap();
+        assert!(!settings.stacked_bandwidth);
     }
 
     #[test]

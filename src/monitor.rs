@@ -89,6 +89,7 @@ pub struct AppState {
     /// a rung. `None` when already at the slowest rung (or auto is off).
     pub auto_clean_needed: Option<u32>,
     pub window_mins: i64,
+    pub stacked_bandwidth: bool,
     pub packet_loss_alert_threshold: u32,
     pub targets: Vec<Target>,
     /// Bumped whenever a new sample lands, so the UI can cheaply detect changes.
@@ -121,6 +122,7 @@ pub fn init_shared(cfg: &Config) -> Shared {
         },
         auto_clean_needed: None,
         window_mins: cfg.window_mins,
+        stacked_bandwidth: cfg.stacked_bandwidth,
         packet_loss_alert_threshold: cfg.packet_loss_alert_threshold,
         targets: cfg.targets.clone(),
         revision: 0,

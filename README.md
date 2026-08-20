@@ -25,7 +25,8 @@ Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs), using
 - **Latency chart** — all targets over a configurable time window, with red
   markers where pings were dropped. The x axis always spans the full window and
   scrolls twice a second, so data slides left instead of stretching to fit.
-  Samples from before a target existed show as gaps, not loss.
+  Samples from before a target existed show as gaps, not loss. Download and
+  upload bandwidth bars are stacked by default and can be switched to overlaid.
 - **Settings pane** — adjust the ping interval and display window, clear history,
   configure packet-loss notifications, test Windows notification delivery, and
   add/edit/reorder/remove targets.

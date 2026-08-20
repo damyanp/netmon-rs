@@ -15,6 +15,7 @@ const INTERVAL_LABELS: [&str; 7] = ["Auto", "1 s", "2 s", "5 s", "10 s", "30 s",
 const WINDOW_LABELS: [&str; 7] = [
     "1 min", "5 min", "10 min", "30 min", "1 hour", "3 hours", "6 hours",
 ];
+const BANDWIDTH_LABELS: [&str; 2] = ["Stacked", "Overlaid"];
 
 const MUTED: Color = Color::rgb(0x8b, 0x94, 0x9e);
 const PANEL_BG: Color = Color::rgb(0x0d, 0x11, 0x17);
@@ -62,6 +63,7 @@ pub struct SettingsCtx {
     /// What auto mode is doing right now, for the explanatory line.
     pub auto_status: String,
     pub window_idx: i32,
+    pub stacked_bandwidth: bool,
     pub alert_threshold: u32,
     pub targets: Vec<Target>,
     pub editing: Editing,
@@ -69,6 +71,7 @@ pub struct SettingsCtx {
     pub set_open: SetState<bool>,
     pub set_interval_idx: SetState<i32>,
     pub set_window_idx: SetState<i32>,
+    pub set_stacked_bandwidth: SetState<bool>,
     pub set_alert_threshold: SetState<u32>,
     pub set_targets: SetState<Vec<Target>>,
     pub set_editing: SetState<Editing>,
@@ -94,6 +97,7 @@ pub fn settings_panel(ctx: SettingsCtx) -> Element {
                 auto_interval,
                 interval_ms,
                 window_mins,
+                stacked_bandwidth: ctx.stacked_bandwidth,
                 alert_threshold: ctx.alert_threshold,
                 set_targets: ctx.set_targets.clone(),
                 set_editing: ctx.set_editing.clone(),
@@ -120,6 +124,7 @@ fn list_view(
     window_mins: i64,
 ) -> Element {
     let alert_threshold = clamp_packet_loss_alert_threshold(ctx.alert_threshold);
+    let stacked_bandwidth = ctx.stacked_bandwidth;
     let interval_combo = ComboBox::new(INTERVAL_LABELS)
         .header("Ping every")
         .selected_index(ctx.interval_idx)
@@ -140,7 +145,14 @@ fn list_view(
                         }
                         (auto, ms)
                     };
-                    config::save_settings(auto, ms, window_mins, alert_threshold, &targets);
+                    config::save_settings(
+                        auto,
+                        ms,
+                        window_mins,
+                        stacked_bandwidth,
+                        alert_threshold,
+                        &targets,
+                    );
                     set_interval_idx.call(i);
                 }
             }
@@ -161,6 +173,7 @@ fn list_view(
                         auto_interval,
                         interval_ms,
                         mins,
+                        stacked_bandwidth,
                         alert_threshold,
                         &targets,
                     );
@@ -185,10 +198,35 @@ fn list_view(
                         auto_interval,
                         interval_ms,
                         window_mins,
+                        stacked_bandwidth,
                         threshold,
                         &targets,
                     );
                     set_alert_threshold.call(threshold);
+                }
+            }
+        });
+
+    let bandwidth_combo = ComboBox::new(BANDWIDTH_LABELS)
+        .header("Bandwidth bars")
+        .selected_index(if stacked_bandwidth { 0 } else { 1 })
+        .on_selection_changed({
+            let shared = ctx.shared.clone();
+            let targets = ctx.targets.clone();
+            let set_stacked_bandwidth = ctx.set_stacked_bandwidth.clone();
+            move |i: i32| {
+                if i >= 0 {
+                    let stacked = i == 0;
+                    shared.lock().unwrap().stacked_bandwidth = stacked;
+                    config::save_settings(
+                        auto_interval,
+                        interval_ms,
+                        window_mins,
+                        stacked,
+                        alert_threshold,
+                        &targets,
+                    );
+                    set_stacked_bandwidth.call(stacked);
                 }
             }
         });
@@ -220,6 +258,7 @@ fn list_view(
                 auto_interval,
                 interval_ms,
                 window_mins,
+                stacked_bandwidth,
                 alert_threshold,
             )
         })
@@ -244,6 +283,7 @@ fn list_view(
         header,
         text_block("Monitoring").font_size(14.0).bold(),
         hstack((interval_combo, window_combo, threshold_box)).spacing(16.0),
+        bandwidth_combo,
         text_block(ctx.auto_status.clone())
             .foreground(MUTED)
             .font_size(12.0),
@@ -281,6 +321,7 @@ fn target_row(
     auto_interval: bool,
     interval_ms: u32,
     window_mins: i64,
+    stacked_bandwidth: bool,
     alert_threshold: u32,
 ) -> Element {
     // Reorder / delete write straight through; only field edits need the form.
@@ -293,6 +334,7 @@ fn target_row(
                 auto_interval,
                 interval_ms,
                 window_mins,
+                stacked_bandwidth,
                 alert_threshold,
                 &new,
             );
@@ -368,6 +410,7 @@ struct FormProps {
     auto_interval: bool,
     interval_ms: u32,
     window_mins: i64,
+    stacked_bandwidth: bool,
     alert_threshold: u32,
     set_targets: SetState<Vec<Target>>,
     set_editing: SetState<Editing>,
@@ -382,6 +425,7 @@ impl PartialEq for FormProps {
             && self.auto_interval == o.auto_interval
             && self.interval_ms == o.interval_ms
             && self.window_mins == o.window_mins
+            && self.stacked_bandwidth == o.stacked_bandwidth
             && self.alert_threshold == o.alert_threshold
             && self.form_tick == o.form_tick
     }
@@ -443,6 +487,7 @@ fn edit_form(props: &FormProps, cx: &mut RenderCx) -> Element {
                 props.auto_interval,
                 props.interval_ms,
                 props.window_mins,
+                props.stacked_bandwidth,
                 props.alert_threshold,
                 &new,
             );
